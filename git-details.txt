@@ -1,0 +1,21 @@
+PS G:\Nutrihome\nutrihome-app> git add .
+warning: in the working copy of 'package-lock.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'package.json', LF will be replaced by CRLF the next time Git touches it
+PS G:\Nutrihome\nutrihome-app> git commit -m "NutriHome production version"
+Author identity unknown
+
+*** Please tell me who you are.
+
+Run
+
+  git config --global user.email "you@example.com"
+  git config --global user.name "Your Name"
+
+to set your account's default identity.
+Omit --global to set the identity only in this repository.
+
+fatal: unable to auto-detect email address (got 'jk@DESKTOP-4EM75O9.(none)')
+PS G:\Nutrihome\nutrihome-app> git config --global user.email "yourgithubemail@gmail.com"
+PS G:\Nutrihome\nutrihome-app> git config --global user.email "godcreation24121976@gmail.com"
+PS G:\Nutrihome\nutrihome-app> git config --global user.name "Jitendra Kumar"
+PS G:\Nutrihome\nutrihome-app>
