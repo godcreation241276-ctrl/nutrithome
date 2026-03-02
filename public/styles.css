@@ -1,0 +1,168 @@
+body {
+  margin: 0;
+  font-family: system-ui;
+  background: #f5f3ed;
+}
+
+/* HEADER */
+.header {
+  text-align: center;
+  padding: 10px 10px 6px;
+  background: linear-gradient(180deg,#1f1a10,#141414);
+}
+
+.logo {
+  width: 80px;
+}
+
+.header h2 {
+  margin: 8px 0 0;
+  font-size: 18px;
+  color: #b7e4c7;
+}
+
+/* CATEGORY TABS */
+.categories {
+  display: flex;
+  overflow-x: auto;
+  padding: 10px;
+  gap: 8px;
+}
+
+.categories {
+  scrollbar-width: none;
+}
+.categories::-webkit-scrollbar {
+  display: none;
+}
+.categories button {
+  border: none;
+  padding: 8px 16px;
+  border-radius: 20px;
+  background: #e0e0e0;
+  cursor: pointer;
+}
+
+.categories button.active {
+  background: #2f6f45;
+  color: white;
+}
+
+/* MENU CARD */
+.menu {
+  background: #141414;
+}
+
+.card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: #1b1e1c;
+  color: #ffffff;
+  border-radius: 12px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+.card img {
+  width: 64px;
+  height: 64px;
+  border-radius: 10px;
+  object-fit: cover;
+}
+
+.card-details {
+  flex: 1;
+}
+
+.card h3 {
+  font-size: 15px;
+}
+
+.card p {
+  color: #9be7c4;
+}
+
+.add-btn {
+  min-width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  font-size: 18px;
+  font-weight: bold;
+}
+
+/* CART BAR */
+.cart-bar {
+  position: fixed;
+  bottom: 0;
+  width: 100%;
+  background: #2f6f45;
+  color: white;
+  padding: 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.cart-bar button {
+  background: white;
+  color: #2f6f45;
+  border: none;
+  padding: 8px 12px;
+  border-radius: 6px;
+}
+
+.hidden {
+  display: none;
+}
+
+.qty-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.qty-box button {
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  border: none;
+  background: #2f6f45;
+  color: white;
+  font-size: 18px;
+}
+
+.qty-box span {
+  min-width: 18px;
+  text-align: center;
+  font-weight: bold;
+}
+
+.customer-form {
+  position: fixed;
+  bottom: 0;
+  width: 100%;
+  background: #1e1e1e;
+  padding: 15px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.customer-form input,
+.customer-form textarea {
+  padding: 8px;
+  border-radius: 6px;
+  border: none;
+}
+
+.customer-form button {
+  padding: 10px;
+  border-radius: 6px;
+  border: none;
+  background: #2f6f45;
+  color: white;
+  font-weight: bold;
+}
+.hidden {
+  display: none !important;
+}

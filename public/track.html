@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8" />
+<title>Track Order</title>
+
+<style>
+body {
+  background:#141414;
+  color:white;
+  font-family:system-ui;
+  padding:20px;
+}
+
+input, button {
+  padding:10px;
+  margin:5px 0;
+  border-radius:6px;
+  border:none;
+}
+
+button {
+  background:#2f6f45;
+  color:white;
+  cursor:pointer;
+}
+
+.progress-container {
+  margin-top:30px;
+}
+
+.step {
+  display:flex;
+  align-items:center;
+  margin:12px 0;
+}
+
+.circle {
+  width:18px;
+  height:18px;
+  border-radius:50%;
+  background:#444;
+  margin-right:10px;
+}
+
+.active {
+  background:#4caf50;
+}
+
+.line {
+  width:2px;
+  height:30px;
+  background:#444;
+  margin-left:8px;
+}
+
+.line.active {
+  background:#4caf50;
+}
+</style>
+</head>
+
+<body>
+
+<h2>Track Your Order</h2>
+
+<input type="number" id="trackId" placeholder="Order ID">
+<input type="tel" id="trackPhone" placeholder="Phone Number">
+<button onclick="trackOrder()">Track</button>
+
+<div id="result"></div>
+
+<script>
+
+const steps = [
+  "NEW",
+  "ACCEPTED",
+  "PREPARING",
+  "READY",
+  "ON_THE_WAY",
+  "DELIVERED"
+];
+
+function buildProgress(currentStatus) {
+
+  let html = '<div class="progress-container">';
+
+  steps.forEach((step, index) => {
+
+    const isActive = steps.indexOf(currentStatus) >= index;
+
+    html += `
+      <div class="step">
+        <div class="circle ${isActive ? 'active' : ''}"></div>
+        <div>${step.replaceAll('_',' ')}</div>
+      </div>
+    `;
+
+    if (index < steps.length - 1) {
+      html += `<div class="line ${isActive ? 'active' : ''}"></div>`;
+    }
+
+  });
+
+  html += '</div>';
+
+  return html;
+}
+
+function trackOrder() {
+
+  const id = document.getElementById('trackId').value;
+  const phone = document.getElementById('trackPhone').value;
+
+  fetch('/track-order', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({ orderId:id, phone:phone })
+  })
+  .then(res=>res.json())
+  .then(data=>{
+
+    if(!data.found){
+      document.getElementById('result').innerHTML =
+        "<p style='color:red'>Order not found</p>";
+      return;
+    }
+
+    const order = data.order;
+    const items = JSON.parse(order.items);
+
+    let itemsHTML = "";
+    items.forEach(i=>{
+      itemsHTML += `<div>${i.name} x${i.qty}</div>`;
+    });
+
+    document.getElementById('result').innerHTML = `
+      <h3>Order #${order.id}</h3>
+      ${buildProgress(order.status)}
+      <div style="margin-top:20px">${itemsHTML}</div>
+      <div style="margin-top:10px"><b>Total: ₹${order.total}</b></div>
+    `;
+  });
+}
+
+/* AUTO REFRESH EVERY 5 SEC */
+setInterval(()=>{
+  const id = document.getElementById('trackId').value;
+  const phone = document.getElementById('trackPhone').value;
+  if(id && phone) trackOrder();
+},5000);
+
+</script>
+
+</body>
+</html>

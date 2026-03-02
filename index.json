@@ -1,0 +1,97 @@
+const express = require('express');
+const sqlite3 = require('sqlite3').verbose();
+const cors = require('cors');
+const fs = require('fs');
+const csv = require('csv-parser');
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+const DB_FILE = './database.db';
+const db = new sqlite3.Database(DB_FILE);
+
+/* -------------------------
+   CREATE TABLES
+------------------------- */
+db.serialize(() => {
+  db.run(`
+    CREATE TABLE IF NOT EXISTS menu (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      category TEXT,
+      name TEXT,
+      price INTEGER,
+      calories INTEGER,
+      image TEXT,
+      active TEXT
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS orders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      items TEXT,
+      total INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+});
+
+/* -------------------------
+   IMPORT CSV MENU
+------------------------- */
+app.get('/import-menu', (req, res) => {
+  db.run('DELETE FROM menu', () => {
+    fs.createReadStream('./uploads/menu.csv')
+      .pipe(csv())
+      .on('data', (row) => {
+        db.run(
+          `INSERT INTO menu (category, name, price, calories, image, active)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [
+            row.category,
+            row.name,
+            row.price,
+            row.calories,
+            row.image,
+            row.active
+          ]
+        );
+      })
+      .on('end', () => {
+        res.json({ status: 'Menu imported successfully' });
+      });
+  });
+});
+
+/* -------------------------
+   GET MENU API
+------------------------- */
+app.get('/menu', (req, res) => {
+  db.all(
+    `SELECT * FROM menu WHERE active='yes' ORDER BY category`,
+    [],
+    (err, rows) => {
+      res.json(rows);
+    }
+  );
+});
+
+/* -------------------------
+   SAVE ORDER
+------------------------- */
+app.post('/order', (req, res) => {
+  const { items, total } = req.body;
+  db.run(
+    `INSERT INTO orders (items, total) VALUES (?, ?)`,
+    [JSON.stringify(items), total],
+    () => res.json({ status: 'Order placed' })
+  );
+});
+
+/* -------------------------
+   START SERVER
+------------------------- */
+app.listen(3000, () => {
+  console.log('NutriHome server running at http://localhost:3000');
+});

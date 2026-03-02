@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nutri Home</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+
+<body>
+
+  <!-- HEADER -->
+  <div class="header">
+    <img src="https://nutrihomefoods.com/images/menu/brand-logo.png" class="logo"/>
+    <h2>Explore Fresh Homemade Meals</h2>
+  </div>
+
+  <!-- CATEGORY TABS -->
+  <div id="categories" class="categories"></div>
+
+  <!-- MENU LIST -->
+  <div id="menu" class="menu"></div>
+
+  <!-- CUSTOMER FORM -->
+  <div id="customerForm" class="customer-form hidden">
+    <input type="text" id="custName" placeholder="Your Name">
+    <input type="tel" id="custPhone" placeholder="Phone Number">
+    <textarea id="custAddress" placeholder="Delivery Address"></textarea>
+    <button type="button" onclick="confirmOrder()">Confirm Order</button>
+    <button type="button" onclick="closeForm()">Cancel</button>
+  </div>
+
+  <!-- CART BAR -->
+  <div id="cartBar" class="cart-bar hidden">
+    <div id="cartInfo"></div>
+    <button type="button" onclick="checkout()">Checkout</button>
+  </div>
+
+  <script src="app.js"></script>
+
+</body>
+</html>
