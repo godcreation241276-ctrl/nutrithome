@@ -7,9 +7,9 @@ body {
 /* HEADER */
 .header {
     display: flex;
+    flex-direction: column;   /* 👈 this makes vertical layout */
     align-items: center;
     justify-content: center;
-    gap: 15px;
     padding: 15px 0;
 }
 
