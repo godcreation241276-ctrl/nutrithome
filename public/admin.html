@@ -1,39 +1,111 @@
-<!DOCTYPE html>
-<html>
+<!doctype html>
+<html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Nutri Home Admin</title>
-  <link rel="stylesheet" href="admin.css"/>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#1f6f3d" />
+  <title>Nutri Home Business Dashboard</title>
+  <link rel="stylesheet" href="/admin.css?v=2401" />
 </head>
-
 <body>
-
-  <body>
-
-  <div class="admin-header">
-    <h2>Nutri Home Orders</h2>
+  <div id="loginView" class="login-shell">
+    <div class="login-card">
+      <div class="brand-row"><div class="brand-mark">NH</div><div><h1>Nutri Home</h1><p>Business Dashboard</p></div></div>
+      <label>Admin Key</label>
+      <input id="adminKeyInput" type="password" autocomplete="current-password" placeholder="Enter ADMIN_KEY" />
+      <button id="loginBtn" class="btn primary wide">Open Dashboard</button>
+      <p id="loginError" class="error-text"></p>
+      <p class="small muted">The key is stored only in this browser until you log out.</p>
+    </div>
   </div>
 
-  <!-- DASHBOARD SUMMARY -->
-  <div class="dashboard">
-    <div>Total Orders Today: <span id="sumOrders">0</span></div>
-    <div>Revenue Today: ₹<span id="sumRevenue">0</span></div>
-    <div>Pending: <span id="sumPending">0</span></div>
-    <div>Accepted: <span id="sumAccepted">0</span></div>
+  <div id="dashboardView" class="hidden">
+    <header class="topbar">
+      <div class="brand-row compact"><div class="brand-mark">NH</div><div><strong>Nutri Home Business</strong><small id="connectionLabel">Connecting…</small></div></div>
+      <div class="top-actions">
+        <button id="notifyBtn" class="btn ghost">Enable alerts</button>
+        <button id="refreshBtn" class="btn ghost">Refresh</button>
+        <button id="logoutBtn" class="btn danger-soft">Logout</button>
+      </div>
+    </header>
+
+    <main class="container">
+      <section class="summary-grid">
+        <div class="metric"><span>Orders today</span><strong id="mOrders">0</strong></div>
+        <div class="metric"><span>Revenue today</span><strong id="mRevenue">₹0</strong></div>
+        <div class="metric"><span>Pending</span><strong id="mPending">0</strong></div>
+        <div class="metric"><span>Accepted</span><strong id="mAccepted">0</strong></div>
+        <div class="metric"><span>Preparing</span><strong id="mPreparing">0</strong></div>
+        <div class="metric"><span>Ready</span><strong id="mReady">0</strong></div>
+      </section>
+
+      <nav class="tabs">
+        <button class="tab active" data-tab="orders">Orders</button>
+        <button class="tab" data-tab="menu">Menu</button>
+      </nav>
+
+      <section id="ordersTab">
+        <div class="section-head">
+          <div><h2>Live Orders</h2><p>Auto-refreshes every 8 seconds.</p></div>
+          <select id="statusFilter">
+            <option value="ALL">All statuses</option>
+            <option value="NEW">New</option>
+            <option value="ACCEPTED">Accepted</option>
+            <option value="PREPARING">Preparing</option>
+            <option value="READY">Ready</option>
+            <option value="OUT_FOR_DELIVERY">Out for delivery</option>
+            <option value="DELIVERED">Delivered</option>
+            <option value="CANCELLED">Cancelled</option>
+          </select>
+        </div>
+        <div id="ordersList" class="orders-grid"></div>
+      </section>
+
+      <section id="menuTab" class="hidden">
+        <div class="section-head">
+          <div><h2>Menu Management</h2><p>Add/edit items, photos and size-wise prices.</p></div>
+          <button id="newItemBtn" class="btn primary">+ Add item</button>
+        </div>
+        <input id="menuSearch" class="search" placeholder="Search menu…" />
+        <div id="menuList" class="menu-grid"></div>
+      </section>
+    </main>
   </div>
 
-  <div id="ordersContainer" class="orders-container"></div>
+  <dialog id="menuDialog">
+    <form method="dialog" class="dialog-card" id="menuForm">
+      <div class="dialog-head"><h3 id="menuDialogTitle">Menu item</h3><button value="cancel" class="icon-btn">×</button></div>
+      <input id="itemId" type="hidden" />
+      <label>Item name</label><input id="itemName" required />
+      <label>Category</label><input id="itemCategory" />
+      <label>Base price (₹)</label><input id="itemPrice" type="number" min="0" step="1" />
+      <label>Status</label>
+      <select id="itemActive"><option value="yes">Active</option><option value="no">Inactive</option></select>
 
-  <script src="admin.js"></script>
+      <div class="photo-box">
+        <img id="itemPreview" alt="" />
+        <div>
+          <input id="imageFile" type="file" accept="image/jpeg,image/png,image/webp" capture="environment" />
+          <button type="button" id="uploadImageBtn" class="btn ghost">Upload selected photo</button>
+          <button type="button" id="removeImageBtn" class="btn danger-soft">Remove photo</button>
+          <input id="itemImage" type="hidden" />
+        </div>
+      </div>
 
-</body>
-  
-  
+      <div class="variant-head"><strong>Sizes / Variants</strong><button type="button" id="addVariantBtn" class="btn ghost">+ Add size</button></div>
+      <div id="variantsBox"></div>
 
-  <div id="ordersContainer" class="orders-container"></div>
+      <p id="menuError" class="error-text"></p>
+      <div class="dialog-actions">
+        <button type="button" id="deleteItemBtn" class="btn danger hidden">Delete item</button>
+        <span class="spacer"></span>
+        <button value="cancel" class="btn ghost">Cancel</button>
+        <button type="submit" id="saveItemBtn" class="btn primary">Save</button>
+      </div>
+    </form>
+  </dialog>
 
-  <script src="admin.js"></script>
-
+  <div id="toast" class="toast hidden"></div>
+  <script src="/admin.js?v=2401"></script>
 </body>
 </html>

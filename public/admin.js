@@ -1,197 +1,157 @@
-const container = document.getElementById('ordersContainer');
 
-/* =========================
-   DASHBOARD SUMMARY
-========================= */
-function loadSummary() {
-  fetch('/admin/summary')
-    .then(res => res.json())
-    .then(data => {
-      document.getElementById('sumOrders').innerText = data.totalOrders;
-      document.getElementById('sumRevenue').innerText = data.totalRevenue;
-      document.getElementById('sumPending').innerText = data.pending;
-      document.getElementById('sumAccepted').innerText = data.accepted;
-    });
+const $ = (id) => document.getElementById(id);
+const API = '';
+let adminKey = localStorage.getItem('nh_admin_key') || '';
+let orders = [];
+let menu = [];
+let lastSeenOrderId = Number(localStorage.getItem('nh_last_order_id') || 0);
+let refreshTimer = null;
+
+function headers(json=true){ const h={'x-admin-key':adminKey}; if(json) h['Content-Type']='application/json'; return h; }
+function money(n){ return `₹${Number(n||0).toLocaleString('en-IN')}`; }
+function esc(s){ return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+function toast(msg){ $('toast').textContent=msg; $('toast').classList.remove('hidden'); setTimeout(()=>$('toast').classList.add('hidden'),2600); }
+
+async function api(path, opts={}){
+  const res = await fetch(API+path,{...opts,headers:{...headers(!(opts.body instanceof FormData)),...(opts.headers||{})}});
+  const txt=await res.text(); let data={}; try{data=txt?JSON.parse(txt):{}}catch{data={error:txt||`HTTP ${res.status}`}}
+  if(res.status===401){ logout(); throw new Error('Admin key is invalid'); }
+  if(!res.ok) throw new Error(data.error||data.message||`Request failed (${res.status})`);
+  return data;
 }
 
-/* =========================
-   STATUS COLOR HELPER
-========================= */
-function getStatusColor(status) {
-  switch (status) {
-    case 'NEW': return '#ff9800';
-    case 'ACCEPTED': return '#2196f3';
-    case 'PREPARING': return '#9c27b0';
-    case 'READY': return '#00bcd4';
-    case 'ON_THE_WAY': return '#3f51b5';
-    case 'DELIVERED': return '#4caf50';
-    default: return '#999';
+async function login(){
+  adminKey=$('adminKeyInput').value.trim();
+  $('loginError').textContent='';
+  if(!adminKey){$('loginError').textContent='Enter ADMIN_KEY';return;}
+  try{
+    await api('/admin/summary');
+    localStorage.setItem('nh_admin_key',adminKey);
+    showDashboard();
+  }catch(e){$('loginError').textContent=e.message;}
+}
+function logout(){ localStorage.removeItem('nh_admin_key'); adminKey=''; clearInterval(refreshTimer); $('dashboardView').classList.add('hidden'); $('loginView').classList.remove('hidden'); }
+async function showDashboard(){
+  $('loginView').classList.add('hidden'); $('dashboardView').classList.remove('hidden');
+  await refreshAll(true);
+  clearInterval(refreshTimer); refreshTimer=setInterval(()=>refreshAll(false),8000);
+}
+async function refreshAll(initial=false){
+  try{
+    const [s,o]=await Promise.all([api('/admin/summary'),api('/admin/orders')]);
+    $('connectionLabel').textContent='Online';
+    $('mOrders').textContent=s.totalOrders??0; $('mRevenue').textContent=money(s.totalRevenue);
+    $('mPending').textContent=s.pending??0; $('mAccepted').textContent=s.accepted??0; $('mPreparing').textContent=s.preparing??0; $('mReady').textContent=s.ready??0;
+    orders=Array.isArray(o)?o:[];
+    detectNewOrders(initial);
+    renderOrders();
+  }catch(e){ $('connectionLabel').textContent='Connection issue'; console.error(e); }
+}
+function detectNewOrders(initial){
+  const maxId=Math.max(0,...orders.map(o=>Number(o.id)||0));
+  if(!initial && maxId>lastSeenOrderId){
+    const fresh=orders.filter(o=>Number(o.id)>lastSeenOrderId && o.status==='NEW');
+    if(fresh.length){ ring(); browserNotify(fresh[0]); toast(`${fresh.length} new order${fresh.length>1?'s':''} received`); }
   }
+  if(maxId>lastSeenOrderId){ lastSeenOrderId=maxId; localStorage.setItem('nh_last_order_id',String(maxId)); }
+}
+function ring(){
+  try{
+    const AC=window.AudioContext||window.webkitAudioContext; const c=new AC();
+    [0,0.32,0.64,0.96].forEach(t=>{const o=c.createOscillator(),g=c.createGain();o.frequency.value=880;g.gain.setValueAtTime(.0001,c.currentTime+t);g.gain.exponentialRampToValueAtTime(.22,c.currentTime+t+.02);g.gain.exponentialRampToValueAtTime(.0001,c.currentTime+t+.22);o.connect(g).connect(c.destination);o.start(c.currentTime+t);o.stop(c.currentTime+t+.24);});
+  }catch{}
+}
+function browserNotify(o){
+  if('Notification' in window && Notification.permission==='granted') new Notification('New Nutri Home Order',{body:`Order #${o.id} • ${money(o.total)}`});
+}
+async function enableAlerts(){
+  if(!('Notification' in window)){toast('Browser notifications not supported');return;}
+  const p=await Notification.requestPermission(); toast(p==='granted'?'Desktop alerts enabled':'Notification permission not granted');
+}
+function parseItems(v){try{return Array.isArray(v)?v:JSON.parse(v||'[]')}catch{return[]}}
+function mapsUrl(o){ if(o.latitude!=null&&o.longitude!=null)return `https://www.google.com/maps?q=${encodeURIComponent(o.latitude+','+o.longitude)}`; return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(o.customer_address||'')}`; }
+
+function renderOrders(){
+  const filter=$('statusFilter').value; const list=orders.filter(o=>filter==='ALL'||o.status===filter);
+  $('ordersList').innerHTML=list.length?list.map(o=>{
+    const items=parseItems(o.items);
+    return `<article class="order-card ${o.status==='NEW'?'new-order':''}">
+      <div class="order-top"><div><div class="order-id">Order #${o.id}</div><div class="muted small">${esc(o.created_at||'')}</div></div><span class="badge ${esc(o.status)}">${esc(o.status)}</span></div>
+      <div class="customer"><strong>${esc(o.customer_name)}</strong><div>${esc(o.customer_phone)}</div><div>${esc(o.customer_address)}</div><a class="link" target="_blank" rel="noopener" href="${mapsUrl(o)}">Open location in Maps ↗</a></div>
+      <div class="items">${items.map(i=>`<div class="item-line"><div>${esc(i.name)} × ${Number(i.qty||1)} ${i.variant?`<div class="variant">${esc(i.variant)}</div>`:''}</div><strong>${money(i.line_total ?? (Number(i.price||0)*Number(i.qty||1)))}</strong></div>`).join('')}</div>
+      <div class="order-foot"><span>Total</span><span class="total">${money(o.total)}</span></div>
+      ${o.delivery_booking_id?`<div class="delivery">Rider: ${esc(o.delivery_status||'BOOKED')} ${o.delivery_tracking_url?`• <a class="link" href="${esc(o.delivery_tracking_url)}" target="_blank">Track</a>`:''}</div>`:''}
+      <div class="actions">
+        ${o.status==='NEW'?`<button class="btn primary" onclick="setStatus(${o.id},'ACCEPTED')">Accept</button>`:''}
+        ${['NEW','ACCEPTED'].includes(o.status)?`<button class="btn ghost" onclick="setStatus(${o.id},'PREPARING')">Preparing</button>`:''}
+        ${['ACCEPTED','PREPARING'].includes(o.status)?`<button class="btn ghost" onclick="setStatus(${o.id},'READY')">Ready</button>`:''}
+        ${o.status==='READY'?`<button class="btn primary" onclick="bookRider(${o.id})">Book rider</button>`:''}
+        ${o.status==='OUT_FOR_DELIVERY'?`<button class="btn primary" onclick="setStatus(${o.id},'DELIVERED')">Delivered</button>`:''}
+        ${!['DELIVERED','CANCELLED'].includes(o.status)?`<button class="btn danger-soft" onclick="setStatus(${o.id},'CANCELLED')">Cancel</button>`:''}
+      </div>
+    </article>`;
+  }).join(''):'<div class="metric">No orders found.</div>';
+}
+async function setStatus(id,status){ try{await api('/admin/order-status',{method:'POST',body:JSON.stringify({orderId:id,status})});toast(`Order #${id}: ${status}`);await refreshAll(false);}catch(e){alert(e.message)} }
+async function bookRider(id){ try{const r=await api('/admin/book-rider',{method:'POST',body:JSON.stringify({orderId:id})});toast(r.delivery?.alreadyBooked?'Rider already booked':'Rider booking sent');await refreshAll(false);}catch(e){alert(e.message)} }
+
+async function loadMenu(){
+  try{menu=await api('/admin/menu');renderMenu();}catch(e){alert(e.message)}
+}
+function renderMenu(){
+  const q=$('menuSearch').value.toLowerCase().trim();
+  const list=menu.filter(i=>`${i.name} ${i.category}`.toLowerCase().includes(q));
+  $('menuList').innerHTML=list.map(i=>`<article class="menu-card" onclick="editItem(${i.id})">
+    ${i.image?`<img src="${esc(i.image)}" onerror="this.style.visibility='hidden'">`:`<div style="height:150px;display:grid;place-items:center;background:#eaf1ec;font-weight:900;font-size:42px;color:#1f6f3d">NH</div>`}
+    <div class="menu-body"><div class="menu-title">${esc(i.name)}</div><div class="menu-meta">${esc(i.category||'')} • ${i.active==='no'?'Inactive':'Active'} • ${(i.variants||[]).length} variants</div><div class="menu-price">${money(i.price)}</div></div>
+  </article>`).join('');
+}
+function addVariantRow(v={}){
+  const row=document.createElement('div');row.className='variant-row';row.dataset.id=v.id||'';
+  row.innerHTML=`<input class="v-label" placeholder="e.g. 300 ml / Half" value="${esc(v.label||'')}"><input class="v-price" type="number" min="1" placeholder="Price" value="${v.price||''}"><button type="button" class="remove-variant">×</button>`;
+  row.querySelector('.remove-variant').onclick=()=>row.remove();$('variantsBox').appendChild(row);
+}
+function resetMenuForm(){
+  $('itemId').value='';$('itemName').value='';$('itemCategory').value='';$('itemPrice').value='';$('itemActive').value='yes';$('itemImage').value='';$('itemPreview').removeAttribute('src');$('variantsBox').innerHTML='';$('deleteItemBtn').classList.add('hidden');$('menuError').textContent='';
+}
+function newItem(){resetMenuForm();$('menuDialogTitle').textContent='Add menu item';$('menuDialog').showModal();}
+function editItem(id){
+  const i=menu.find(x=>Number(x.id)===Number(id));if(!i)return;resetMenuForm();$('menuDialogTitle').textContent=`Edit: ${i.name}`;$('itemId').value=i.id;$('itemName').value=i.name||'';$('itemCategory').value=i.category||'';$('itemPrice').value=i.price||0;$('itemActive').value=i.active==='no'?'no':'yes';$('itemImage').value=i.image||'';if(i.image)$('itemPreview').src=i.image;(i.variants||[]).forEach(addVariantRow);$('deleteItemBtn').classList.remove('hidden');$('menuDialog').showModal();
+}
+async function uploadImage(){
+  const f=$('imageFile').files[0];if(!f){toast('Choose or take a photo first');return;}
+  const fd=new FormData();fd.append('image',f);
+  try{
+    const res=await fetch('/admin/menu-image',{method:'POST',headers:{'x-admin-key':adminKey},body:fd});const j=await res.json();
+    if(!res.ok)throw new Error(j.error||'Upload failed');$('itemImage').value=j.url;$('itemPreview').src=j.url;toast('Photo uploaded');
+  }catch(e){alert(e.message)}
+}
+async function removeImage(){
+  const url=$('itemImage').value;if(!url){$('itemPreview').removeAttribute('src');return;}
+  if(!confirm('Remove this photo?'))return;
+  try{await api('/admin/menu-image',{method:'DELETE',body:JSON.stringify({url})});$('itemImage').value='';$('itemPreview').removeAttribute('src');toast('Photo removed');}catch(e){alert(e.message)}
+}
+async function saveItem(ev){
+  ev.preventDefault();
+  const variants=[...document.querySelectorAll('.variant-row')].map((r,idx)=>({id:r.dataset.id||`web_${Date.now()}_${idx}`,label:r.querySelector('.v-label').value.trim(),price:Number(r.querySelector('.v-price').value||0)})).filter(v=>v.label&&v.price>0);
+  const payload={name:$('itemName').value.trim(),category:$('itemCategory').value.trim(),price:Number($('itemPrice').value||0),active:$('itemActive').value,image:$('itemImage').value,variants};
+  if(!payload.name){$('menuError').textContent='Item name is required';return;}
+  const id=$('itemId').value;
+  try{await api(id?`/admin/menu/${id}`:'/admin/menu',{method:id?'PUT':'POST',body:JSON.stringify(payload)});$('menuDialog').close();toast('Menu saved');await loadMenu();}catch(e){$('menuError').textContent=e.message}
+}
+async function deleteItem(){
+  const id=$('itemId').value;if(!id||!confirm('Delete this menu item permanently?'))return;
+  try{await api(`/admin/menu/${id}`,{method:'DELETE'});$('menuDialog').close();toast('Item deleted');await loadMenu();}catch(e){alert(e.message)}
+}
+function switchTab(name){
+  document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));
+  $('ordersTab').classList.toggle('hidden',name!=='orders');$('menuTab').classList.toggle('hidden',name!=='menu');
+  if(name==='menu')loadMenu();
 }
 
-/* =========================
-   NEXT BUTTON HELPER
-========================= */
-function getNextButton(order) {
+$('loginBtn').onclick=login;$('adminKeyInput').addEventListener('keydown',e=>{if(e.key==='Enter')login()});
+$('logoutBtn').onclick=logout;$('refreshBtn').onclick=()=>refreshAll(false);$('notifyBtn').onclick=enableAlerts;$('statusFilter').onchange=renderOrders;
+document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>switchTab(b.dataset.tab));
+$('newItemBtn').onclick=newItem;$('menuSearch').oninput=renderMenu;$('addVariantBtn').onclick=()=>addVariantRow();$('uploadImageBtn').onclick=uploadImage;$('removeImageBtn').onclick=removeImage;$('menuForm').onsubmit=saveItem;$('deleteItemBtn').onclick=deleteItem;
 
-  const safeName = order.customer_name.replace(/'/g, "\\'");
-  const safePhone = order.customer_phone.replace(/'/g, "\\'");
-
-  if (order.status === 'NEW')
-    return `<button onclick="changeStatus(${order.id}, 'ACCEPTED', '${safeName}', '${safePhone}')">Accept</button>`;
-
-  if (order.status === 'ACCEPTED')
-    return `<button onclick="changeStatus(${order.id}, 'PREPARING', '${safeName}', '${safePhone}')">Start Preparing</button>`;
-
-  if (order.status === 'PREPARING')
-    return `<button onclick="changeStatus(${order.id}, 'READY', '${safeName}', '${safePhone}')">Mark Ready</button>`;
-
-  if (order.status === 'READY')
-    return `<button onclick="changeStatus(${order.id}, 'ON_THE_WAY', '${safeName}', '${safePhone}')">Out for Delivery</button>`;
-
-  if (order.status === 'ON_THE_WAY')
-    return `<button onclick="changeStatus(${order.id}, 'DELIVERED', '${safeName}', '${safePhone}')">Delivered</button>`;
-
-  return '';
-}
-
-/* =========================
-   LOAD ORDERS
-========================= */
-function loadOrders() {
-  fetch('/admin/orders')
-    .then(res => res.json())
-    .then(data => {
-
-      container.innerHTML = '';
-
-      if (!data || data.length === 0) {
-        container.innerHTML = '<p style="color:#aaa;padding:15px">No orders yet.</p>';
-        return;
-      }
-
-      data.forEach(order => {
-
-        const card = document.createElement('div');
-        card.className = 'order-card';
-
-        const items = JSON.parse(order.items || '[]');
-        let itemsHTML = '';
-
-        items.forEach(i => {
-          itemsHTML += `<div>${i.name} x${i.qty} — ₹${i.price * i.qty}</div>`;
-        });
-
-        const date = new Date(order.created_at).toLocaleString('en-IN');
-        const statusColor = getStatusColor(order.status);
-
-        card.innerHTML = `
-          <div class="order-id">Order #${order.id}</div>
-          <div class="order-date">${date}</div>
-
-          <div class="order-status" style="color:${statusColor}">
-            Status: <b>${order.status.replaceAll('_',' ')}</b>
-          </div>
-
-          <div><b>Name:</b> ${order.customer_name}</div>
-          <div><b>Phone:</b> ${order.customer_phone}</div>
-          <div><b>Address:</b> ${order.customer_address}</div>
-
-          <div class="order-items">${itemsHTML}</div>
-          <div class="order-total">Total: ₹${order.total}</div>
-
-          <div class="order-actions">
-            ${getNextButton(order)}
-          </div>
-        `;
-
-        container.appendChild(card);
-      });
-    });
-}
-
-/* =========================
-   STATUS CHANGE + WHATSAPP
-========================= */
-function changeStatus(orderId, newStatus, name, phone) {
-
-  fetch('/admin/order-status', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ orderId, status: newStatus })
-  })
-  .then(() => {
-
-    sendWhatsAppNotification(orderId, newStatus, name, phone);
-
-    loadSummary();
-    loadOrders();
-  });
-}
-
-/* =========================
-   WHATSAPP MESSAGE BUILDER
-========================= */
-function sendWhatsAppNotification(orderId, status, name, phone) {
-
-  phone = phone.replace(/\D/g, '');
-
-  if (phone.startsWith('0')) phone = phone.substring(1);
-  if (!phone.startsWith('91')) phone = '91' + phone;
-
-  let message = '';
-
-  switch (status) {
-
-    case 'ACCEPTED':
-      message =
-        `Hi ${name},\n\n` +
-        `Your order #${orderId} has been ACCEPTED 🍱\n` +
-        `We are preparing it now.\n\nThank you 🙏`;
-      break;
-
-    case 'PREPARING':
-      message =
-        `Hi ${name},\n\n` +
-        `Your order #${orderId} is being PREPARED 👨‍🍳\n` +
-        `Almost ready!\n\nThank you 🙏`;
-      break;
-
-    case 'READY':
-      message =
-        `Hi ${name},\n\n` +
-        `Your order #${orderId} is READY 🎉\n` +
-        `Dispatching shortly.\n\nThank you 🙏`;
-      break;
-
-    case 'ON_THE_WAY':
-      message =
-        `Hi ${name},\n\n` +
-        `Your order #${orderId} is ON THE WAY 🚚\n` +
-        `Please be available to receive it.\n\nThank you 🙏`;
-      break;
-
-    case 'DELIVERED':
-      message =
-        `Hi ${name},\n\n` +
-        `Your order #${orderId} has been DELIVERED ✅\n` +
-        `We hope you enjoyed your meal!\n\nThank you 🙏`;
-      break;
-  }
-
-  if (message) {
-    const waUrl = `https://wa.me/${phone}?text=${encodeURIComponent(message)}`;
-    window.open(waUrl, '_blank');
-  }
-}
-
-/* =========================
-   INIT + AUTO REFRESH
-========================= */
-loadSummary();
-loadOrders();
-
-setInterval(() => {
-  loadSummary();
-  loadOrders();
-}, 5000);
+if(adminKey){ $('adminKeyInput').value=adminKey; showDashboard(); }
