@@ -334,55 +334,59 @@ async function notifyBusiness(order) {
    SAVE ORDER
 ------------------------- */
 app.post('/order', (req, res) => {
-  const {
-    customer_name,
-    customer_phone,
-    customer_address,
-    latitude,
-    longitude,
-    items,
-    total
-  } = req.body;
+  const { customer_name, customer_phone, customer_address, latitude, longitude, items } = req.body;
 
-  if (!customer_name || !customer_phone || !customer_address || !Array.isArray(items) || items.length === 0) {
-    return res.status(400).json({ success: false, error: 'Required order information is missing' });
+  const cleanName = String(customer_name || '').trim().slice(0, 80);
+  const cleanPhone = String(customer_phone || '').replace(/\D/g, '').slice(-10);
+  const cleanAddress = String(customer_address || '').trim().slice(0, 350);
+
+  if (!cleanName || !/^[6-9]\d{9}$/.test(cleanPhone) || !cleanAddress || !Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ success: false, error: 'Required order information is missing or invalid' });
   }
+  if (items.length > 50) return res.status(400).json({ success: false, error: 'Too many cart lines' });
 
-  const finalTotal = Number.parseInt(total, 10) || 0;
-  if (finalTotal <= 0) return res.status(400).json({ success: false, error: 'Invalid order total' });
+  const ids = [...new Set(items.map(x => Number(x.id)).filter(Number.isInteger))];
+  if (!ids.length) return res.status(400).json({ success: false, error: 'Invalid cart items' });
+  const placeholders = ids.map(() => '?').join(',');
 
-  db.run(
-    `INSERT INTO orders
-     (customer_name,customer_phone,customer_address,latitude,longitude,items,total,status)
-     VALUES (?,?,?,?,?,?,?,'NEW')`,
-    [
-      String(customer_name).trim(),
-      String(customer_phone).trim(),
-      String(customer_address).trim(),
-      latitude == null ? null : Number(latitude),
-      longitude == null ? null : Number(longitude),
-      JSON.stringify(items),
-      finalTotal
-    ],
-    function (err) {
-      if (err) return res.status(500).json({ success: false, error: 'Order could not be saved' });
+  db.all(`SELECT * FROM menu WHERE active='yes' AND id IN (${placeholders})`, ids, (menuErr, rows) => {
+    if (menuErr) return res.status(500).json({ success: false, error: 'Unable to validate menu' });
+    const byId = new Map((rows || []).map(r => [Number(r.id), { ...r, variants: parseVariants(r.variants) }]));
+    const finalItems = [];
+    let finalTotal = 0;
 
-      const order = {
-        id: this.lastID,
-        customer_name: String(customer_name).trim(),
-        customer_phone: String(customer_phone).trim(),
-        customer_address: String(customer_address).trim(),
-        latitude: latitude == null ? null : Number(latitude),
-        longitude: longitude == null ? null : Number(longitude),
-        items,
-        total: finalTotal,
-        status: 'NEW'
-      };
+    for (const requestItem of items) {
+      const item = byId.get(Number(requestItem.id));
+      const qty = Math.min(20, Math.max(1, Number.parseInt(requestItem.qty, 10) || 0));
+      if (!item || qty <= 0) return res.status(400).json({ success: false, error: 'One or more menu items are unavailable' });
 
-      notifyBusiness(order);
-      res.json({ success: true, orderId: this.lastID, status: 'NEW' });
+      let variant = null;
+      let unitPrice = Number(item.price) || 0;
+      if (Array.isArray(item.variants) && item.variants.length) {
+        variant = item.variants.find(v => String(v.id) === String(requestItem.variant_id || ''));
+        if (!variant && requestItem.variant) variant = item.variants.find(v => String(v.label) === String(requestItem.variant));
+        if (!variant) return res.status(400).json({ success: false, error: `Please select a valid size for ${item.name}` });
+        unitPrice = Number(variant.price) || 0;
+      }
+      if (unitPrice <= 0) return res.status(400).json({ success: false, error: `Invalid price for ${item.name}` });
+      const lineTotal = unitPrice * qty;
+      finalTotal += lineTotal;
+      finalItems.push({ id: item.id, name: item.name, variant: variant?.label || null, variant_id: variant?.id || null, price: unitPrice, qty, line_total: lineTotal });
     }
-  );
+
+    db.run(
+      `INSERT INTO orders
+       (customer_name,customer_phone,customer_address,latitude,longitude,items,total,status)
+       VALUES (?,?,?,?,?,?,?,'NEW')`,
+      [cleanName, cleanPhone, cleanAddress, latitude == null ? null : Number(latitude), longitude == null ? null : Number(longitude), JSON.stringify(finalItems), finalTotal],
+      function (err) {
+        if (err) return res.status(500).json({ success: false, error: 'Order could not be saved' });
+        const order = { id: this.lastID, customer_name: cleanName, customer_phone: cleanPhone, customer_address: cleanAddress, latitude: latitude == null ? null : Number(latitude), longitude: longitude == null ? null : Number(longitude), items: finalItems, total: finalTotal, status: 'NEW' };
+        notifyBusiness(order);
+        res.json({ success: true, orderId: this.lastID, total: finalTotal, status: 'NEW' });
+      }
+    );
+  });
 });
 
 /* -------------------------
@@ -685,13 +689,44 @@ app.get('/admin/summary', adminAuth, (req, res) => {
 });
 
 /* -------------------------
+   CUSTOMER PWA + GEO HELPERS
+------------------------- */
+app.get(['/order', '/order/'], (_req, res) => {
+  res.set('Cache-Control', 'no-cache');
+  res.sendFile(path.join(__dirname, 'public', 'order', 'index.html'));
+});
+
+app.get('/reverse-geocode', async (req, res) => {
+  const lat = Number(req.query.lat);
+  const lng = Number(req.query.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+    return res.status(400).json({ error: 'Valid lat/lng required' });
+  }
+  try {
+    const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&addressdetails=1&lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lng)}`;
+    const r = await fetch(url, { headers: { 'User-Agent': 'NutriHomeFoods/1.0 (nutrihomefoods.com)', 'Accept-Language': 'en-IN,en;q=0.9' } });
+    if (!r.ok) throw new Error(`Reverse geocode failed (${r.status})`);
+    const data = await r.json();
+    res.set('Cache-Control', 'private, max-age=300');
+    res.json({ address: data.display_name || '', source: 'OpenStreetMap Nominatim' });
+  } catch (e) {
+    res.status(502).json({ error: 'Address lookup unavailable' });
+  }
+});
+
+/* -------------------------
    HEALTH + STATIC + START
 ------------------------- */
 app.get('/health', (req, res) => {
   res.json({ status: 'OK', service: 'Nutri Home', timestamp: new Date().toISOString() });
 });
 
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'), {
+  setHeaders: (res, filePath) => {
+    if (/manifest\.webmanifest$|sw\.js$|index\.html$/.test(filePath)) res.setHeader('Cache-Control', 'no-cache');
+    else if (/\.(css|js|png|jpg|jpeg|webp|svg)$/i.test(filePath)) res.setHeader('Cache-Control', 'public, max-age=86400');
+  }
+}));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Nutri Home server running on port ${PORT}`));
