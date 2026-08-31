@@ -4,10 +4,11 @@ const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
 const csv = require('csv-parser');
+const multer = require('multer');
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '2mb' }));
 
 const db = new sqlite3.Database('./database.db', (err) => {
   if (err) console.error('Database connection error:', err.message);
@@ -51,7 +52,8 @@ db.serialize(() => {
       price INTEGER,
       calories INTEGER DEFAULT 0,
       image TEXT,
-      active TEXT DEFAULT 'yes'
+      active TEXT DEFAULT 'yes',
+      variants TEXT DEFAULT '[]'
     )
   `);
 
@@ -90,6 +92,7 @@ db.serialize(() => {
   addColumnIfMissing('orders', 'delivery_status TEXT');
   addColumnIfMissing('orders', 'delivery_tracking_url TEXT');
   addColumnIfMissing('orders', 'delivery_error TEXT');
+  addColumnIfMissing('menu', "variants TEXT DEFAULT '[]'");
 });
 
 /* -------------------------
@@ -126,6 +129,105 @@ function resolveMenuImage(imageUrl) {
   return '';
 }
 
+
+/* -------------------------
+   MENU IMAGE UPLOAD
+------------------------- */
+const menuImageDir = path.join(__dirname, 'public', 'images', 'menu');
+fs.mkdirSync(menuImageDir, { recursive: true });
+
+function safeImageBaseName(value) {
+  return String(value || 'menu')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 60) || 'menu';
+}
+
+const imageStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, menuImageDir),
+  filename: (_req, file, cb) => {
+    const originalExt = path.extname(file.originalname || '').toLowerCase();
+    const allowedExt = ['.jpg', '.jpeg', '.png', '.webp'];
+    const ext = allowedExt.includes(originalExt)
+      ? (originalExt === '.jpeg' ? '.jpg' : originalExt)
+      : '.jpg';
+
+    cb(null, `${safeImageBaseName(path.basename(file.originalname || 'menu', originalExt))}_${Date.now()}${ext}`);
+  }
+});
+
+const uploadMenuImage = multer({
+  storage: imageStorage,
+  limits: { fileSize: 8 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (!/^image\/(jpeg|png|webp)$/.test(file.mimetype || '')) {
+      return cb(new Error('Only JPG, PNG or WEBP images are allowed'));
+    }
+    cb(null, true);
+  }
+});
+
+app.post('/admin/menu-image', adminAuth, uploadMenuImage.single('image'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'image file required' });
+  res.json({
+    success: true,
+    url: `/images/menu/${req.file.filename}`,
+    filename: req.file.filename
+  });
+});
+
+app.delete('/admin/menu-image', adminAuth, (req, res) => {
+  const url = String(req.body?.url || '').trim();
+  if (!url) return res.status(400).json({ error: 'url required' });
+
+  // Remote image URLs are only detached from the item; they are not deleted remotely.
+  if (/^https?:\/\//i.test(url)) {
+    return res.json({ success: true, deletedFile: false, remote: true });
+  }
+
+  const filename = path.basename(url);
+  const filePath = path.join(menuImageDir, filename);
+
+  if (!filePath.startsWith(menuImageDir)) {
+    return res.status(400).json({ error: 'Invalid image path' });
+  }
+
+  fs.unlink(filePath, (err) => {
+    if (err && err.code !== 'ENOENT') {
+      return res.status(500).json({ error: err.message });
+    }
+    res.json({ success: true, deletedFile: !err });
+  });
+});
+
+function parseVariants(value) {
+  if (Array.isArray(value)) return value;
+  try {
+    const parsed = JSON.parse(value || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function normaliseVariants(value) {
+  return parseVariants(value)
+    .map((v, index) => ({
+      id: String(v.id || `v_${Date.now()}_${index}`),
+      label: String(v.label || '').trim(),
+      price: Number(v.price) || 0
+    }))
+    .filter(v => v.label && v.price > 0);
+}
+
+function attachParsedVariants(rows) {
+  return (rows || []).map(row => ({
+    ...row,
+    variants: parseVariants(row.variants)
+  }));
+}
+
 /* -------------------------
    MENU IMPORT
 ------------------------- */
@@ -145,7 +247,8 @@ function importMenuFromCSV(callback) {
         price: Number.parseInt(row.current_price, 10) || 0,
         calories: 0,
         image: resolveMenuImage(row.image_url),
-        active: 'yes'
+        active: 'yes',
+        variants: []
       });
     })
     .on('error', callback)
@@ -159,12 +262,12 @@ function importMenuFromCSV(callback) {
           }
 
           const stmt = db.prepare(`
-            INSERT INTO menu (category,name,price,calories,image,active)
-            VALUES (?,?,?,?,?,?)
+            INSERT INTO menu (category,name,price,calories,image,active,variants)
+            VALUES (?,?,?,?,?,?,?)
           `);
           let insertError = null;
           for (const item of menuRows) {
-            stmt.run([item.category, item.name, item.price, item.calories, item.image, item.active], (err) => {
+            stmt.run([item.category, item.name, item.price, item.calories, item.image, item.active, JSON.stringify(item.variants)], (err) => {
               if (err && !insertError) insertError = err;
             });
           }
@@ -195,7 +298,7 @@ app.post('/admin/import-menu', adminAuth, (req, res) => {
 app.get('/menu', (req, res) => {
   db.all(`SELECT * FROM menu WHERE active='yes' ORDER BY category,id`, [], (err, rows) => {
     if (err) return res.status(500).json({ error: 'Unable to load menu' });
-    res.json(rows);
+    res.json(attachParsedVariants(rows));
   });
 });
 
@@ -468,44 +571,79 @@ app.post('/admin/book-rider', adminAuth, async (req, res) => {
 app.get('/admin/menu', adminAuth, (req, res) => {
   db.all(`SELECT * FROM menu ORDER BY category,name`, [], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
-    res.json(rows);
+    res.json(attachParsedVariants(rows));
   });
 });
 
 app.post('/admin/menu', adminAuth, (req, res) => {
-  const { category, name, price, image = '', active = 'yes' } = req.body;
+  const { category, name, price, image = '', active = 'yes', variants = [] } = req.body;
   if (!name || !String(name).trim()) return res.status(400).json({ error: 'name required' });
 
   const normalizedImage = resolveMenuImage(image) || String(image || '').trim();
+  const normalizedVariants = normaliseVariants(variants);
+
   db.run(
-    `INSERT INTO menu(category,name,price,calories,image,active) VALUES(?,?,?,0,?,?)`,
-    [String(category || '').trim(), String(name).trim(), Number(price) || 0, normalizedImage, active === 'no' ? 'no' : 'yes'],
+    `INSERT INTO menu(category,name,price,calories,image,active,variants)
+     VALUES(?,?,?,0,?,?,?)`,
+    [
+      String(category || '').trim(),
+      String(name).trim(),
+      Number(price) || 0,
+      normalizedImage,
+      active === 'no' ? 'no' : 'yes',
+      JSON.stringify(normalizedVariants)
+    ],
     function (err) {
       if (err) return res.status(500).json({ error: err.message });
-      res.json({ success: true, id: this.lastID });
+      res.json({ success: true, id: this.lastID, variants: normalizedVariants });
     }
   );
 });
 
 app.put('/admin/menu/:id', adminAuth, (req, res) => {
-  const { category, name, price, image = '', active = 'yes' } = req.body;
+  const { category, name, price, image = '', active = 'yes', variants = [] } = req.body;
   if (!name || !String(name).trim()) return res.status(400).json({ error: 'name required' });
 
   const normalizedImage = resolveMenuImage(image) || String(image || '').trim();
+  const normalizedVariants = normaliseVariants(variants);
+
   db.run(
-    `UPDATE menu SET category=?,name=?,price=?,image=?,active=? WHERE id=?`,
-    [String(category || '').trim(), String(name).trim(), Number(price) || 0, normalizedImage, active === 'no' ? 'no' : 'yes', req.params.id],
+    `UPDATE menu SET category=?,name=?,price=?,image=?,active=?,variants=? WHERE id=?`,
+    [
+      String(category || '').trim(),
+      String(name).trim(),
+      Number(price) || 0,
+      normalizedImage,
+      active === 'no' ? 'no' : 'yes',
+      JSON.stringify(normalizedVariants),
+      req.params.id
+    ],
     function (err) {
       if (err) return res.status(500).json({ error: err.message });
-      res.json({ success: true, updated: this.changes });
+      res.json({ success: true, updated: this.changes, variants: normalizedVariants });
     }
   );
 });
 
 app.delete('/admin/menu/:id', adminAuth, (req, res) => {
-  db.run(`DELETE FROM menu WHERE id=?`, [req.params.id], function (err) {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json({ success: true, deleted: this.changes });
+  db.get(`SELECT image FROM menu WHERE id=?`, [req.params.id], (getErr, row) => {
+    if (getErr) return res.status(500).json({ error: getErr.message });
+
+    db.run(`DELETE FROM menu WHERE id=?`, [req.params.id], function (err) {
+      if (err) return res.status(500).json({ error: err.message });
+
+      // If this was a locally uploaded image and no other item uses it, remove it.
+      const image = String(row?.image || '');
+      if (image.startsWith('/images/menu/')) {
+        db.get(`SELECT COUNT(*) AS count FROM menu WHERE image=?`, [image], (_countErr, countRow) => {
+          if (Number(countRow?.count || 0) === 0) {
+            fs.unlink(path.join(menuImageDir, path.basename(image)), () => {});
+          }
+        });
+      }
+
+      res.json({ success: true, deleted: this.changes });
+    });
   });
 });
 
