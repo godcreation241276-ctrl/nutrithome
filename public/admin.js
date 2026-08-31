@@ -6,6 +6,9 @@ let orders = [];
 let menu = [];
 let lastSeenOrderId = Number(localStorage.getItem('nh_last_order_id') || 0);
 let refreshTimer = null;
+let audioCtx = null;
+let ringTimer = null;
+let ringStopTimer = null;
 
 function headers(json=true){ const h={'x-admin-key':adminKey}; if(json) h['Content-Type']='application/json'; return h; }
 function money(n){ return `₹${Number(n||0).toLocaleString('en-IN')}`; }
@@ -55,18 +58,73 @@ function detectNewOrders(initial){
   }
   if(maxId>lastSeenOrderId){ lastSeenOrderId=maxId; localStorage.setItem('nh_last_order_id',String(maxId)); }
 }
-function ring(){
+function getAudioContext(){
+  if(!audioCtx){
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if(AC) audioCtx = new AC();
+  }
+  return audioCtx;
+}
+async function unlockAudio(){
   try{
-    const AC=window.AudioContext||window.webkitAudioContext; const c=new AC();
-    [0,0.32,0.64,0.96].forEach(t=>{const o=c.createOscillator(),g=c.createGain();o.frequency.value=880;g.gain.setValueAtTime(.0001,c.currentTime+t);g.gain.exponentialRampToValueAtTime(.22,c.currentTime+t+.02);g.gain.exponentialRampToValueAtTime(.0001,c.currentTime+t+.22);o.connect(g).connect(c.destination);o.start(c.currentTime+t);o.stop(c.currentTime+t+.24);});
-  }catch{}
+    const c = getAudioContext();
+    if(c && c.state === 'suspended') await c.resume();
+    if(c){
+      const o=c.createOscillator(), g=c.createGain();
+      g.gain.value=.00001; o.connect(g).connect(c.destination);
+      o.start(); o.stop(c.currentTime+.03);
+    }
+    return true;
+  }catch(e){ console.warn('Audio unlock failed',e); return false; }
+}
+function stopRing(){
+  if(ringTimer){ clearInterval(ringTimer); ringTimer=null; }
+  if(ringStopTimer){ clearTimeout(ringStopTimer); ringStopTimer=null; }
+}
+function ringBurst(){
+  try{
+    const c=getAudioContext(); if(!c) return;
+    if(c.state==='suspended') c.resume();
+    const now=c.currentTime;
+    [0,.18,.36,.54].forEach((t,idx)=>{
+      const o=c.createOscillator(), g=c.createGain();
+      o.type=idx%2===0?'square':'sine';
+      o.frequency.setValueAtTime(idx%2===0?930:760,now+t);
+      g.gain.setValueAtTime(.0001,now+t);
+      g.gain.exponentialRampToValueAtTime(.42,now+t+.015);
+      g.gain.exponentialRampToValueAtTime(.0001,now+t+.15);
+      o.connect(g).connect(c.destination);
+      o.start(now+t); o.stop(now+t+.17);
+    });
+  }catch(e){ console.warn('Ring failed',e); }
+}
+function ring(){
+  stopRing();
+  ringBurst();
+  ringTimer=setInterval(ringBurst,1400);
+  ringStopTimer=setTimeout(stopRing,12000);
 }
 function browserNotify(o){
   if('Notification' in window && Notification.permission==='granted') new Notification('New Nutri Home Order',{body:`Order #${o.id} • ${money(o.total)}`});
 }
 async function enableAlerts(){
-  if(!('Notification' in window)){toast('Browser notifications not supported');return;}
-  const p=await Notification.requestPermission(); toast(p==='granted'?'Desktop alerts enabled':'Notification permission not granted');
+  await unlockAudio();
+  let notificationOk=false;
+  if('Notification' in window){
+    try{
+      const p=Notification.permission==='granted'?'granted':await Notification.requestPermission();
+      notificationOk=(p==='granted');
+    }catch(e){ console.warn(e); }
+  }
+  ringBurst();
+  toast(notificationOk?'Alerts enabled — test sound played':'Sound enabled. Browser notification permission is not granted.');
+}
+function testAlert(){
+  unlockAudio().then(()=>{
+    ring();
+    browserNotify({id:'TEST',total:11});
+    toast('Test alert sent — ring should play for 12 seconds');
+  });
 }
 function parseItems(v){try{return Array.isArray(v)?v:JSON.parse(v||'[]')}catch{return[]}}
 function mapsUrl(o){ if(o.latitude!=null&&o.longitude!=null)return `https://www.google.com/maps?q=${encodeURIComponent(o.latitude+','+o.longitude)}`; return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(o.customer_address||'')}`; }
@@ -150,8 +208,10 @@ function switchTab(name){
 }
 
 $('loginBtn').onclick=login;$('adminKeyInput').addEventListener('keydown',e=>{if(e.key==='Enter')login()});
-$('logoutBtn').onclick=logout;$('refreshBtn').onclick=()=>refreshAll(false);$('notifyBtn').onclick=enableAlerts;$('statusFilter').onchange=renderOrders;
+$('logoutBtn').onclick=logout;$('refreshBtn').onclick=()=>refreshAll(false);$('notifyBtn').onclick=enableAlerts;$('testAlertBtn').onclick=testAlert;$('statusFilter').onchange=renderOrders;
 document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>switchTab(b.dataset.tab));
 $('newItemBtn').onclick=newItem;$('menuSearch').oninput=renderMenu;$('addVariantBtn').onclick=()=>addVariantRow();$('uploadImageBtn').onclick=uploadImage;$('removeImageBtn').onclick=removeImage;$('menuForm').onsubmit=saveItem;$('deleteItemBtn').onclick=deleteItem;
 
 if(adminKey){ $('adminKeyInput').value=adminKey; showDashboard(); }
+
+window.addEventListener('click', (e)=>{ if(e.target.closest('.order-card .btn')) stopRing(); });
