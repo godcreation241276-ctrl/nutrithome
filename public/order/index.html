@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#ffffff" />
+  <meta name="description" content="Order fresh home-style meals from Nutri Home." />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="Nutri Home" />
+  <link rel="manifest" href="/order/manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="/order/icons/icon-192.png" />
+  <link rel="icon" href="/order/icons/icon-192.png" />
+  <link rel="stylesheet" href="/order/styles.css" />
+  <title>Nutri Home — Order Online</title>
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <div class="brand-wrap">
+        <div class="brand-mark">NH</div>
+        <div>
+          <div class="brand">Nutri Home</div>
+          <div class="tagline">Fresh home-style food</div>
+        </div>
+      </div>
+      <button id="installBtn" class="install-btn hidden">Install App</button>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div>
+          <h1>What would you like to eat?</h1>
+          <p>Choose your meal, quantity and delivery location.</p>
+        </div>
+        <div class="open-badge">● Taking orders</div>
+      </section>
+
+      <section class="tools">
+        <label class="search-box">
+          <span>⌕</span>
+          <input id="searchInput" type="search" placeholder="Search dishes" autocomplete="off" />
+        </label>
+        <div id="categories" class="category-row" aria-label="Menu categories"></div>
+      </section>
+
+      <div id="menuState" class="state-card">Loading menu…</div>
+      <section id="menuGrid" class="menu-grid"></section>
+    </main>
+
+    <button id="cartBar" class="cart-bar hidden" aria-label="Open cart">
+      <span><strong id="cartQty">0</strong> item(s)</span>
+      <span>View Cart · <strong id="cartTotal">₹0</strong></span>
+    </button>
+
+    <div id="sheetBackdrop" class="backdrop hidden"></div>
+
+    <section id="variantSheet" class="sheet hidden" aria-modal="true" role="dialog">
+      <div class="sheet-handle"></div>
+      <div class="sheet-head">
+        <div>
+          <h2 id="variantTitle">Choose size</h2>
+          <p>Select one option</p>
+        </div>
+        <button class="icon-btn" data-close="variantSheet">×</button>
+      </div>
+      <div id="variantOptions" class="variant-list"></div>
+    </section>
+
+    <section id="cartSheet" class="sheet sheet-large hidden" aria-modal="true" role="dialog">
+      <div class="sheet-handle"></div>
+      <div class="sheet-head">
+        <div>
+          <h2>Your cart</h2>
+          <p>Review before checkout</p>
+        </div>
+        <button class="icon-btn" data-close="cartSheet">×</button>
+      </div>
+      <div id="cartLines" class="cart-lines"></div>
+      <div class="total-row"><span>Total</span><strong id="sheetTotal">₹0</strong></div>
+      <button id="checkoutBtn" class="primary-btn">Continue to delivery details</button>
+    </section>
+
+    <section id="checkoutSheet" class="sheet sheet-large hidden" aria-modal="true" role="dialog">
+      <div class="sheet-handle"></div>
+      <div class="sheet-head">
+        <div>
+          <h2>Delivery details</h2>
+          <p>We need these details to deliver your order.</p>
+        </div>
+        <button class="icon-btn" data-close="checkoutSheet">×</button>
+      </div>
+      <form id="checkoutForm" novalidate>
+        <label class="field">Name<input id="customerName" autocomplete="name" maxlength="80" required /></label>
+        <label class="field">Mobile number<input id="customerPhone" inputmode="numeric" autocomplete="tel" maxlength="10" placeholder="10-digit mobile number" required /></label>
+        <label class="field">Delivery address<textarea id="customerAddress" rows="3" autocomplete="street-address" maxlength="350" required></textarea></label>
+        <div class="location-row">
+          <button id="locationBtn" type="button" class="secondary-btn">📍 Use current location</button>
+          <span id="locationStatus" class="location-status"></span>
+        </div>
+        <div class="checkout-total"><span>Payable</span><strong id="checkoutTotal">₹0</strong></div>
+        <button id="placeOrderBtn" type="submit" class="primary-btn">Place Order</button>
+      </form>
+    </section>
+
+    <section id="successSheet" class="sheet hidden" aria-modal="true" role="dialog">
+      <div class="success-icon">✓</div>
+      <h2>Order placed!</h2>
+      <p id="successText">Your order has been sent to Nutri Home.</p>
+      <button id="doneBtn" class="primary-btn">Done</button>
+    </section>
+
+    <div id="toast" class="toast hidden" role="status"></div>
+  </div>
+
+  <script src="/order/app.js" defer></script>
+</body>
+</html>
