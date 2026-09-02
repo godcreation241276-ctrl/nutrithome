@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#1f6b3a" />
   <title>Nutri Home</title>
   <link rel="manifest" href="/order/manifest.webmanifest" />
-  <link rel="stylesheet" href="/order/styles.css?v=262" />
+  <link rel="stylesheet" href="/order/styles.css?v=270" />
 </head>
 <body>
 <div id="app">
@@ -79,17 +79,53 @@
 
   <section id="loginSheet" class="sheet hidden">
     <div class="sheet-handle"></div>
-    <div class="sheet-head"><div><h2>Login to Nutri Home</h2><p>Use your mobile number to view orders and rate delivered food.</p></div><button class="icon-btn" data-close>×</button></div>
-    <div id="loginPhoneStep">
-      <label class="field">Mobile number<input id="loginPhone" inputmode="numeric" maxlength="10" placeholder="10-digit mobile number" /></label>
-      <button id="sendOtpBtn" class="primary-btn">Send OTP</button>
+    <div class="sheet-head">
+      <div>
+        <div class="auth-eyebrow">NUTRI HOME ACCOUNT</div>
+        <h2>Login with mobile</h2>
+        <p id="loginSubtitle">Access all your current and previous orders securely.</p>
+      </div>
+      <button class="icon-btn" data-close>×</button>
     </div>
-    <div id="loginOtpStep" class="hidden">
-      <p class="otp-copy">OTP sent to <strong id="otpPhoneLabel"></strong></p>
-      <label class="field">OTP<input id="loginOtp" inputmode="numeric" maxlength="8" placeholder="Enter OTP" /></label>
-      <button id="verifyOtpBtn" class="primary-btn">Verify & Login</button>
-      <button id="changePhoneBtn" class="link-btn">Change mobile number</button>
+
+    <div class="auth-card">
+      <div id="loginPhoneStep">
+        <label class="field">
+          Mobile number
+          <div class="phone-input-wrap">
+            <span class="country-code">+91</span>
+            <input id="loginPhone" inputmode="numeric" autocomplete="tel-national" maxlength="10" placeholder="10-digit mobile number" />
+          </div>
+        </label>
+        <div class="auth-help">We’ll send a one-time password by SMS.</div>
+        <button id="sendOtpBtn" class="primary-btn">Send OTP</button>
+      </div>
+
+      <div id="loginOtpStep" class="hidden">
+        <div class="otp-sent-row">
+          <div>
+            <div class="otp-sent-title">Enter verification code</div>
+            <div id="otpPhoneLabel" class="otp-phone-label"></div>
+          </div>
+          <button id="changePhoneBtn" class="text-btn" type="button">Change</button>
+        </div>
+
+        <label class="field otp-field">
+          OTP
+          <input id="loginOtp" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6-digit OTP" />
+        </label>
+        <button id="verifyOtpBtn" class="primary-btn">Verify & Login</button>
+
+        <div class="otp-resend-row">
+          <span id="otpCountdown">You can resend OTP in 60s</span>
+          <button id="resendOtpBtn" class="text-btn hidden" type="button">Resend OTP</button>
+        </div>
+      </div>
+
+      <div id="authMessage" class="auth-message hidden"></div>
     </div>
+
+    <div class="auth-security-note">🔒 Your mobile number is used only to secure your Nutri Home account and orders.</div>
   </section>
 
   <section id="accountSheet" class="sheet sheet-large hidden">
@@ -143,6 +179,6 @@
 
   <div id="toast" class="toast hidden"></div>
 </div>
-<script src="/order/app.js?v=262" defer></script>
+<script src="/order/app.js?v=270" defer></script>
 </body>
 </html>

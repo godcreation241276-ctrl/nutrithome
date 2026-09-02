@@ -1,6 +1,6 @@
 const API_BASE=location.origin,FALLBACK='/order/icons/icon-512.png';
 const $=id=>document.getElementById(id),esc=(s='')=>String(s).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])),money=n=>`₹${Math.round(Number(n)||0)}`;
-const state={menu:[],category:'All',search:'',cart:new Map(),selectedItem:null,selectedVariant:null,coords:null,token:localStorage.getItem('nh_customer_token')||'',phone:localStorage.getItem('nh_customer_phone')||'',orders:[],reviewTarget:null,reviewRating:0,tracking:null,trackings:[],sessionActiveOrders:[],selectedOrderSource:'token',trackingTimer:null,homeTrackingTimer:null,lastTrackedStatus:null};
+const state={menu:[],category:'All',search:'',cart:new Map(),selectedItem:null,selectedVariant:null,coords:null,token:localStorage.getItem('nh_customer_token')||'',phone:localStorage.getItem('nh_customer_phone')||'',orders:[],reviewTarget:null,reviewRating:0,otpTimer:null,otpRetryAfter:60,tracking:null,trackings:[],sessionActiveOrders:[],selectedOrderSource:'token',trackingTimer:null,homeTrackingTimer:null,lastTrackedStatus:null};
 function imageUrl(v){if(!v)return FALLBACK;v=String(v).trim();return /^https?:\/\//i.test(v)?v:`${API_BASE}${v.startsWith('/')?'':'/'}${v}`}
 function lines(){return[...state.cart.values()].filter(x=>x.qty>0)}function cartQty(){return lines().reduce((s,x)=>s+x.qty,0)}function cartTotal(){return lines().reduce((s,x)=>s+x.qty*Number(x.price),0)}
 function keyFor(i,v){return`${i.id}::${v?.id||v?.label||'base'}`}function qtyForItem(id){return lines().filter(x=>Number(x.item.id)===Number(id)).reduce((s,x)=>s+x.qty,0)}
@@ -180,8 +180,93 @@ function decrementItem(id){const e=[...state.cart.entries()].find(([,x])=>Number
 function renderCart(){const ls=lines();$('cartLines').innerHTML=ls.length?ls.map(x=>{const k=keyFor(x.item,x.variant);return`<div class="cart-line"><div><div class="line-name">${esc(x.item.name)}</div>${x.variant?`<div class="line-variant">${esc(x.variant.label)}</div>`:''}</div><div class="line-right"><strong>${money(x.price*x.qty)}</strong><div class="mini-qty"><button data-minus="${esc(k)}">−</button><span>${x.qty}</span><button data-plus="${esc(k)}">+</button></div></div></div>`}).join(''):'<div class="state-card">Your cart is empty.</div>';$('sheetTotal').textContent=money(cartTotal());$('checkoutTotal').textContent=money(cartTotal());$('checkoutBtn').disabled=!ls.length}
 async function useLocation(){if(!navigator.geolocation)return toast('Location is not supported');$('locationStatus').textContent='Getting GPS and address…';navigator.geolocation.getCurrentPosition(async p=>{state.coords={latitude:p.coords.latitude,longitude:p.coords.longitude};try{const r=await fetch(`${API_BASE}/reverse-geocode?lat=${p.coords.latitude}&lng=${p.coords.longitude}&t=${Date.now()}`,{cache:'no-store'});const d=await r.json();if(d.address)$('customerAddress').value=d.address;$('locationStatus').textContent=`Location captured • ${p.coords.latitude.toFixed(5)}, ${p.coords.longitude.toFixed(5)}`}catch(_){$('locationStatus').textContent='GPS captured. Please enter address manually.'}},()=>toast('Could not get current location'),{enableHighAccuracy:true,timeout:20000,maximumAge:0})}
 async function placeOrder(e){e.preventDefault();const name=$('customerName').value.trim(),phone=$('customerPhone').value.replace(/\D/g,'').slice(-10),address=$('customerAddress').value.trim();if(!name)return toast('Enter your name');if(!/^[6-9]\d{9}$/.test(phone))return toast('Enter a valid mobile number');if(!address)return toast('Enter delivery address');const btn=$('placeOrderBtn');btn.disabled=true;btn.textContent='Placing order…';try{localStorage.setItem('nh_customer_name',name);const payload={customer_name:name,customer_phone:phone,customer_address:address,latitude:state.coords?.latitude??null,longitude:state.coords?.longitude??null,items:lines().map(x=>({id:x.item.id,variant_id:x.variant?.id||null,variant:x.variant?.label||null,qty:x.qty}))};const r=await fetch(`${API_BASE}/order`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const d=await r.json();if(!r.ok||!d.success)throw Error(d.error||'Order failed');saveTracking(d.orderId,d.trackingToken);state.cart.clear();renderMenu();renderCart();closeSheets();$('successText').textContent=`Order #${d.orderId} • ${money(d.total)} • Status: Order placed`;openSheet('successSheet');if(state.token)loadMyOrders()}catch(err){toast(err.message)}finally{btn.disabled=false;btn.textContent='Place Order'}}
-async function sendOtp(){const phone=$('loginPhone').value.replace(/\D/g,'').slice(-10);if(!/^[6-9]\d{9}$/.test(phone))return toast('Enter a valid 10-digit mobile number');const b=$('sendOtpBtn');b.disabled=true;b.textContent='Sending…';try{const r=await fetch(`${API_BASE}/customer/request-otp`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone})});const d=await r.json();if(!r.ok)throw Error(d.error||'OTP could not be sent');state.phone=phone;$('otpPhoneLabel').textContent=phone;$('loginPhoneStep').classList.add('hidden');$('loginOtpStep').classList.remove('hidden');toast(d.testMode?'Test OTP mode is enabled on server':'OTP sent')}catch(e){toast(e.message)}finally{b.disabled=false;b.textContent='Send OTP'}}
-async function verifyOtp(){const otp=$('loginOtp').value.replace(/\D/g,'');if(otp.length<4)return toast('Enter OTP');const b=$('verifyOtpBtn');b.disabled=true;b.textContent='Verifying…';try{const r=await fetch(`${API_BASE}/customer/verify-otp`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone:state.phone,otp})});const d=await r.json();if(!r.ok)throw Error(d.error||'OTP verification failed');state.token=d.token;state.phone=d.customer.phone;localStorage.setItem('nh_customer_token',state.token);localStorage.setItem('nh_customer_phone',state.phone);updateAccountButton();$('customerPhone').value=state.phone;closeSheets();await openAccount()}catch(e){toast(e.message)}finally{b.disabled=false;b.textContent='Verify & Login'}}
+function setAuthMessage(message,type='error'){
+  const el=$('authMessage');
+  if(!message){el.className='auth-message hidden';el.textContent='';return}
+  el.className=`auth-message ${type}`;
+  el.textContent=message;
+}
+function maskLoginPhone(phone){
+  const p=String(phone||'');
+  return p.length===10?`+91 ••••••${p.slice(-4)}`:`+91 ${p}`;
+}
+function startOtpCountdown(seconds=60){
+  clearInterval(state.otpTimer);
+  state.otpRetryAfter=Math.max(1,Number(seconds)||60);
+  $('resendOtpBtn').classList.add('hidden');
+  $('otpCountdown').classList.remove('hidden');
+  const tick=()=>{
+    if(state.otpRetryAfter<=0){
+      clearInterval(state.otpTimer);
+      state.otpTimer=null;
+      $('otpCountdown').classList.add('hidden');
+      $('resendOtpBtn').classList.remove('hidden');
+      return;
+    }
+    $('otpCountdown').textContent=`You can resend OTP in ${state.otpRetryAfter}s`;
+    state.otpRetryAfter--;
+  };
+  tick();
+  state.otpTimer=setInterval(tick,1000);
+}
+async function sendOtp(isResend=false){
+  const phone=(isResend?state.phone:$('loginPhone').value.replace(/\D/g,'').slice(-10));
+  if(!/^[6-9]\d{9}$/.test(phone))return setAuthMessage('Enter a valid 10-digit Indian mobile number');
+  const b=isResend?$('resendOtpBtn'):$('sendOtpBtn');
+  b.disabled=true;
+  b.textContent=isResend?'Sending…':'Sending…';
+  setAuthMessage('');
+  try{
+    const r=await fetch(`${API_BASE}/customer/request-otp`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone})});
+    const d=await r.json();
+    if(!r.ok){
+      if(r.status===429&&d.retryAfter)startOtpCountdown(d.retryAfter);
+      throw Error(d.error||'OTP could not be sent');
+    }
+    state.phone=phone;
+    $('otpPhoneLabel').textContent=`OTP sent to ${maskLoginPhone(phone)}`;
+    $('loginPhoneStep').classList.add('hidden');
+    $('loginOtpStep').classList.remove('hidden');
+    $('loginOtp').value='';
+    $('loginOtp').focus();
+    startOtpCountdown(d.retryAfter||60);
+    setAuthMessage('OTP sent successfully.','success');
+  }catch(e){
+    setAuthMessage(e.message);
+  }finally{
+    b.disabled=false;
+    b.textContent=isResend?'Resend OTP':'Send OTP';
+  }
+}
+async function verifyOtp(){
+  const otp=$('loginOtp').value.replace(/\D/g,'').slice(0,6);
+  if(otp.length!==6)return setAuthMessage('Enter the 6-digit OTP sent to your mobile.');
+  const b=$('verifyOtpBtn');
+  b.disabled=true;
+  b.textContent='Verifying…';
+  setAuthMessage('');
+  try{
+    const r=await fetch(`${API_BASE}/customer/verify-otp`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone:state.phone,otp})});
+    const d=await r.json();
+    if(!r.ok)throw Error(d.error||'OTP verification failed');
+    state.token=d.token;
+    state.phone=d.customer.phone;
+    localStorage.setItem('nh_customer_token',state.token);
+    localStorage.setItem('nh_customer_phone',state.phone);
+    updateAccountButton();
+    $('customerPhone').value=state.phone;
+    clearInterval(state.otpTimer);
+    state.otpTimer=null;
+    setAuthMessage('Login successful. Loading your orders…','success');
+    await refreshHomeOrders();
+    setTimeout(async()=>{closeSheets();await openAccount();},250);
+  }catch(e){
+    setAuthMessage(e.message);
+  }finally{
+    b.disabled=false;
+    b.textContent='Verify & Login';
+  }
+}
 async function openAccount(){if(!state.token)return openSheet('loginSheet');$('accountPhone').textContent=`+91 ${state.phone}`;openSheet('accountSheet');await loadMyOrders()}
 async function loadMyOrders(){if(!state.token)return;const box=$('myOrders');box.innerHTML='<div class="state-card">Loading orders…</div>';try{const r=await fetch(`${API_BASE}/customer/orders`,{headers:authHeaders(),cache:'no-store'});const d=await r.json();if(r.status===401){logoutLocal();throw Error('Please login again')}if(!r.ok)throw Error(d.error||'Could not load orders');state.orders=d;renderMyOrders()}catch(e){box.innerHTML=`<div class="state-card">${esc(e.message)}</div>`}}
 function renderMyOrders(){const box=$('myOrders');box.innerHTML=state.orders.length?state.orders.map(o=>{const items=Array.isArray(o.items)?o.items:[],reviews=Array.isArray(o.reviews)?o.reviews:[];return`<article class="order-history-card"><div class="order-history-top"><strong>Order #${o.id}</strong><span class="history-status">${esc(o.status)}</span></div><div class="history-items">${items.map(x=>`${x.qty||1}× ${esc(x.name)}${x.variant?` (${esc(x.variant)})`:''}`).join('<br>')}</div><div class="total-row"><span>Total</span><strong>${money(o.total)}</strong></div>${o.status==='DELIVERED'?items.map(x=>{const rr=reviews.find(r=>Number(r.menu_id)===Number(x.id));return`<div class="rate-row"><span>${esc(x.name)}</span>${rr?`<span class="reviewed">★ ${rr.rating} Reviewed</span>`:`<button class="rate-btn" data-rate-order="${o.id}" data-rate-menu="${x.id}" data-rate-name="${esc(x.name)}">Rate item</button>`}</div>`}).join(''):''}</article>`}).join(''):'<div class="state-card">No orders found for this mobile number.</div>'}
@@ -190,8 +275,10 @@ function renderStars(){$('stars').innerHTML=[1,2,3,4,5].map(n=>`<button class="s
 async function submitReview(){if(!state.reviewTarget||!state.reviewRating)return;const b=$('submitReviewBtn');b.disabled=true;b.textContent='Submitting…';try{const r=await fetch(`${API_BASE}/customer/reviews`,{method:'POST',headers:{...authHeaders(),'Content-Type':'application/json'},body:JSON.stringify({order_id:state.reviewTarget.orderId,menu_id:state.reviewTarget.menuId,rating:state.reviewRating,review:$('reviewText').value.trim()})});const d=await r.json();if(!r.ok)throw Error(d.error||'Could not save review');toast('Thank you for your rating!');closeSheets();await loadMenu();await openAccount()}catch(e){toast(e.message)}finally{b.disabled=false;b.textContent='Submit Review'}}
 function logoutLocal(){state.token='';state.phone='';localStorage.removeItem('nh_customer_token');localStorage.removeItem('nh_customer_phone');updateAccountButton()}
 async function logout(){try{if(state.token)await fetch(`${API_BASE}/customer/logout`,{method:'POST',headers:authHeaders()})}catch(_){}logoutLocal();closeSheets();toast('Logged out')}
-$('searchInput').oninput=e=>{state.search=e.target.value;renderMenu()};$('categories').onclick=e=>{const b=e.target.closest('[data-cat]');if(!b)return;state.category=b.dataset.cat;renderCategories();renderMenu()};$('menuGrid').onclick=e=>{const b=e.target.closest('[data-action]');if(!b)return;const i=state.menu.find(x=>String(x.id)===String(b.dataset.id));if(!i)return;b.dataset.action==='add'?addItem(i):decrementItem(i.id)};$('variantOptions').onclick=e=>{const b=e.target.closest('[data-variant]');if(!b)return;state.selectedVariant=Number(b.dataset.variant);renderVariantSelection()};$('variantAddBtn').onclick=()=>{const v=state.selectedItem?.variants?.[state.selectedVariant];if(!v)return;const i=state.selectedItem;closeSheets();addResolved(i,v)};$('cartBar').onclick=()=>{renderCart();openSheet('cartSheet')};$('cartLines').onclick=e=>{const m=e.target.closest('[data-minus]'),p=e.target.closest('[data-plus]');if(m)decrementKey(m.dataset.minus);if(p){const x=state.cart.get(p.dataset.plus);if(x){x.qty++;renderMenu();renderCart()}}};$('checkoutBtn').onclick=()=>{closeSheets();$('customerName').value=localStorage.getItem('nh_customer_name')||'';$('customerPhone').value=state.phone||'';renderCart();openSheet('checkoutSheet')};$('checkoutForm').onsubmit=placeOrder;$('locationBtn').onclick=useLocation;$('accountBtn').onclick=openAccount;$('sendOtpBtn').onclick=sendOtp;$('verifyOtpBtn').onclick=verifyOtp;$('changePhoneBtn').onclick=()=>{$('loginOtpStep').classList.add('hidden');$('loginPhoneStep').classList.remove('hidden')};$('refreshOrdersBtn').onclick=loadMyOrders;$('logoutBtn').onclick=logout;$('myOrders').onclick=e=>{const b=e.target.closest('[data-rate-order]');if(b)openReview(b.dataset.rateOrder,b.dataset.rateMenu,b.dataset.rateName)};$('stars').onclick=e=>{const b=e.target.closest('[data-star]');if(b){state.reviewRating=Number(b.dataset.star);renderStars()}};$('submitReviewBtn').onclick=submitReview;$('homeOrdersList').onclick=e=>{const b=e.target.closest('[data-live-order]');if(!b)return;const orderId=Number(b.dataset.liveOrder);const ref=state.trackings.find(x=>Number(x.orderId)===orderId);if(ref){state.tracking=ref;state.selectedOrderSource='token'}else if(state.token){state.tracking={orderId};state.selectedOrderSource='session'}else{return}loadTracking(true)};$('trackOrderBtn').onclick=()=>{closeSheets();state.tracking=state.trackings[0]||state.tracking;state.selectedOrderSource='token';loadTracking(true)};$('trackingRefreshBtn').onclick=()=>loadTracking(false);$('doneBtn').onclick=closeSheets;$('sheetBackdrop').onclick=closeSheets;document.addEventListener('click',e=>{if(e.target.closest('[data-close]'))closeSheets()});
+$('searchInput').oninput=e=>{state.search=e.target.value;renderMenu()};$('categories').onclick=e=>{const b=e.target.closest('[data-cat]');if(!b)return;state.category=b.dataset.cat;renderCategories();renderMenu()};$('menuGrid').onclick=e=>{const b=e.target.closest('[data-action]');if(!b)return;const i=state.menu.find(x=>String(x.id)===String(b.dataset.id));if(!i)return;b.dataset.action==='add'?addItem(i):decrementItem(i.id)};$('variantOptions').onclick=e=>{const b=e.target.closest('[data-variant]');if(!b)return;state.selectedVariant=Number(b.dataset.variant);renderVariantSelection()};$('variantAddBtn').onclick=()=>{const v=state.selectedItem?.variants?.[state.selectedVariant];if(!v)return;const i=state.selectedItem;closeSheets();addResolved(i,v)};$('cartBar').onclick=()=>{renderCart();openSheet('cartSheet')};$('cartLines').onclick=e=>{const m=e.target.closest('[data-minus]'),p=e.target.closest('[data-plus]');if(m)decrementKey(m.dataset.minus);if(p){const x=state.cart.get(p.dataset.plus);if(x){x.qty++;renderMenu();renderCart()}}};$('checkoutBtn').onclick=()=>{closeSheets();$('customerName').value=localStorage.getItem('nh_customer_name')||'';$('customerPhone').value=state.phone||'';renderCart();openSheet('checkoutSheet')};$('checkoutForm').onsubmit=placeOrder;$('locationBtn').onclick=useLocation;$('accountBtn').onclick=openAccount;$('sendOtpBtn').onclick=()=>sendOtp(false);$('resendOtpBtn').onclick=()=>sendOtp(true);$('verifyOtpBtn').onclick=verifyOtp;$('changePhoneBtn').onclick=()=>{clearInterval(state.otpTimer);state.otpTimer=null;setAuthMessage('');$('loginOtpStep').classList.add('hidden');$('loginPhoneStep').classList.remove('hidden');$('loginPhone').value=state.phone||'';$('loginPhone').focus()};$('refreshOrdersBtn').onclick=loadMyOrders;$('logoutBtn').onclick=logout;$('myOrders').onclick=e=>{const b=e.target.closest('[data-rate-order]');if(b)openReview(b.dataset.rateOrder,b.dataset.rateMenu,b.dataset.rateName)};$('stars').onclick=e=>{const b=e.target.closest('[data-star]');if(b){state.reviewRating=Number(b.dataset.star);renderStars()}};$('submitReviewBtn').onclick=submitReview;$('homeOrdersList').onclick=e=>{const b=e.target.closest('[data-live-order]');if(!b)return;const orderId=Number(b.dataset.liveOrder);const ref=state.trackings.find(x=>Number(x.orderId)===orderId);if(ref){state.tracking=ref;state.selectedOrderSource='token'}else if(state.token){state.tracking={orderId};state.selectedOrderSource='session'}else{return}loadTracking(true)};$('trackOrderBtn').onclick=()=>{closeSheets();state.tracking=state.trackings[0]||state.tracking;state.selectedOrderSource='token';loadTracking(true)};$('trackingRefreshBtn').onclick=()=>loadTracking(false);$('doneBtn').onclick=closeSheets;$('sheetBackdrop').onclick=closeSheets;document.addEventListener('click',e=>{if(e.target.closest('[data-close]'))closeSheets()});
 let installPrompt=null;window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();installPrompt=e;$('installBtn').classList.remove('hidden')});$('installBtn').onclick=async()=>{if(installPrompt){installPrompt.prompt();installPrompt=null;$('installBtn').classList.add('hidden')}};if('serviceWorker'in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('/order/sw.js'));
 loadSavedTracking();updateAccountButton();loadMenu();startHomeTracking();
 
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)startHomeTracking()});
+
+$('loginOtp').addEventListener('keydown',e=>{if(e.key==='Enter')verifyOtp()});

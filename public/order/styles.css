@@ -57,3 +57,23 @@
 .home-live-card.cancelled .home-live-status{color:var(--danger)}
 .home-live-card.cancelled .home-live-track span{background:var(--danger)}
 @media (max-width:560px){.home-orders-heading{align-items:flex-start}.home-orders-note{max-width:120px}}
+
+/* v2.7 MSG91 mobile OTP login */
+.auth-eyebrow{font-size:10px;letter-spacing:.09em;font-weight:950;color:var(--accent);margin-bottom:4px}
+.auth-card{border:1px solid var(--line);border-radius:17px;padding:15px;background:#fff;margin-top:8px}
+.phone-input-wrap{display:flex;align-items:center;border:1px solid var(--line);border-radius:12px;background:#fff;margin-top:6px;overflow:hidden}
+.phone-input-wrap:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px rgba(28,120,69,.08)}
+.country-code{padding:0 11px;font-weight:900;color:var(--text);border-right:1px solid var(--line)}
+.phone-input-wrap input{border:0!important;box-shadow:none!important;margin:0!important;border-radius:0!important;flex:1;min-width:0}
+.auth-help,.auth-security-note{font-size:11px;color:var(--muted);line-height:1.45}
+.auth-help{margin:7px 1px 13px}
+.auth-security-note{text-align:center;margin:12px 10px 2px}
+.otp-sent-row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:13px}
+.otp-sent-title{font-size:15px;font-weight:950}
+.otp-phone-label{font-size:12px;color:var(--muted);margin-top:3px}
+.text-btn{border:0;background:transparent;color:var(--accent);font-weight:900;padding:7px;cursor:pointer}
+.otp-field input{letter-spacing:.18em;font-size:20px;font-weight:900;text-align:center}
+.otp-resend-row{display:flex;align-items:center;justify-content:center;gap:8px;min-height:30px;margin-top:8px;font-size:11px;color:var(--muted)}
+.auth-message{border-radius:11px;padding:10px 11px;margin-top:11px;font-size:12px;font-weight:750}
+.auth-message.error{background:#fff0ef;color:var(--danger)}
+.auth-message.success{background:var(--accent2);color:var(--accent)}
