@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#1f6b3a" />
   <title>Nutri Home</title>
   <link rel="manifest" href="/order/manifest.webmanifest" />
-  <link rel="stylesheet" href="/order/styles.css?v=260" />
+  <link rel="stylesheet" href="/order/styles.css?v=261" />
 </head>
 <body>
 <div id="app">
@@ -27,23 +27,17 @@
       <div class="open-badge">● Taking orders</div>
     </section>
 
-    <button id="homeOrderStatus" class="home-order-status hidden" type="button" aria-label="Open live order details">
-      <div class="home-status-topline">
-        <span class="live-pill"><span class="live-dot"></span> LIVE ORDER</span>
-        <span id="homeStatusOrder" class="home-status-order">Order</span>
-      </div>
-      <div class="home-status-main">
-        <div class="home-status-copy">
-          <div id="homeStatusText" class="home-status-text">Checking status…</div>
-          <div id="homeStatusHint" class="home-status-hint">Tap to view order details</div>
+    <section id="homeOrdersStatus" class="home-orders-status hidden" aria-label="Live orders">
+      <div class="home-orders-heading">
+        <div>
+          <div class="live-pill"><span class="live-dot"></span> LIVE ORDERS</div>
+          <div id="homeOrdersCount" class="home-orders-count">1 active order</div>
         </div>
-        <div class="home-status-arrow" aria-hidden="true">›</div>
+        <div class="home-orders-note">Tap any order to view details</div>
       </div>
-      <div class="home-status-track" aria-hidden="true"><span id="homeStatusProgress"></span></div>
-      <div id="homeStatusStages" class="home-status-stages" aria-hidden="true"></div>
-    </button>
-
-    <section class="tools">
+      <div id="homeOrdersList" class="home-orders-list"></div>
+    </section>
+<section class="tools">
       <label class="search-box">⌕<input id="searchInput" placeholder="Search dishes" /></label>
       <div id="categories" class="category-row"></div>
     </section>
@@ -149,6 +143,6 @@
 
   <div id="toast" class="toast hidden"></div>
 </div>
-<script src="/order/app.js?v=260" defer></script>
+<script src="/order/app.js?v=261" defer></script>
 </body>
 </html>

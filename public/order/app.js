@@ -1,6 +1,6 @@
 const API_BASE=location.origin,FALLBACK='/order/icons/icon-512.png';
 const $=id=>document.getElementById(id),esc=(s='')=>String(s).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])),money=n=>`₹${Math.round(Number(n)||0)}`;
-const state={menu:[],category:'All',search:'',cart:new Map(),selectedItem:null,selectedVariant:null,coords:null,token:localStorage.getItem('nh_customer_token')||'',phone:localStorage.getItem('nh_customer_phone')||'',orders:[],reviewTarget:null,reviewRating:0,tracking:null,trackingTimer:null,homeTrackingTimer:null,lastTrackedStatus:null};
+const state={menu:[],category:'All',search:'',cart:new Map(),selectedItem:null,selectedVariant:null,coords:null,token:localStorage.getItem('nh_customer_token')||'',phone:localStorage.getItem('nh_customer_phone')||'',orders:[],reviewTarget:null,reviewRating:0,tracking:null,trackings:[],trackingTimer:null,homeTrackingTimer:null,lastTrackedStatus:null};
 function imageUrl(v){if(!v)return FALLBACK;v=String(v).trim();return /^https?:\/\//i.test(v)?v:`${API_BASE}${v.startsWith('/')?'':'/'}${v}`}
 function lines(){return[...state.cart.values()].filter(x=>x.qty>0)}function cartQty(){return lines().reduce((s,x)=>s+x.qty,0)}function cartTotal(){return lines().reduce((s,x)=>s+x.qty*Number(x.price),0)}
 function keyFor(i,v){return`${i.id}::${v?.id||v?.label||'base'}`}function qtyForItem(id){return lines().filter(x=>Number(x.item.id)===Number(id)).reduce((s,x)=>s+x.qty,0)}
@@ -8,8 +8,34 @@ function toast(m){const t=$('toast');t.textContent=m;t.classList.remove('hidden'
 function openSheet(id){$('sheetBackdrop').classList.remove('hidden');$(id).classList.remove('hidden');document.body.style.overflow='hidden'}
 function closeSheets(){document.querySelectorAll('.sheet').forEach(x=>x.classList.add('hidden'));$('sheetBackdrop').classList.add('hidden');document.body.style.overflow='';clearInterval(state.trackingTimer);state.trackingTimer=null}
 function authHeaders(){return state.token?{Authorization:`Bearer ${state.token}`}:{}}
-function saveTracking(orderId,token){if(!orderId||!token)return;const data={orderId:Number(orderId),token:String(token)};state.tracking=data;localStorage.setItem('nh_last_tracking',JSON.stringify(data));startHomeTracking()}
-function loadSavedTracking(){try{const x=JSON.parse(localStorage.getItem('nh_last_tracking')||'null');if(x?.orderId&&x?.token)state.tracking=x}catch(_){}}
+function persistTrackings(){
+  localStorage.setItem('nh_active_trackings',JSON.stringify(state.trackings.map(x=>({orderId:Number(x.orderId),token:String(x.token)}))));
+  if(state.trackings[0])localStorage.setItem('nh_last_tracking',JSON.stringify(state.trackings[0]));
+}
+function saveTracking(orderId,token){
+  if(!orderId||!token)return;
+  const data={orderId:Number(orderId),token:String(token)};
+  state.trackings=[data,...state.trackings.filter(x=>Number(x.orderId)!==data.orderId)].slice(0,10);
+  state.tracking=data;
+  persistTrackings();
+  startHomeTracking();
+}
+function loadSavedTracking(){
+  try{
+    const list=JSON.parse(localStorage.getItem('nh_active_trackings')||'[]');
+    if(Array.isArray(list))state.trackings=list.filter(x=>x?.orderId&&x?.token).map(x=>({orderId:Number(x.orderId),token:String(x.token)}));
+  }catch(_){}
+  // Backward compatibility: migrate the old single-order key into the new list.
+  try{
+    const old=JSON.parse(localStorage.getItem('nh_last_tracking')||'null');
+    if(old?.orderId&&old?.token&&!state.trackings.some(x=>Number(x.orderId)===Number(old.orderId))){
+      state.trackings.unshift({orderId:Number(old.orderId),token:String(old.token)});
+    }
+  }catch(_){}
+  state.trackings=state.trackings.slice(0,10);
+  state.tracking=state.trackings[0]||null;
+  persistTrackings();
+}
 function trackingSteps(status){
   if(status==='CANCELLED')return[];
   return ['NEW','ACCEPTED','PREPARING','READY','OUT_FOR_DELIVERY','DELIVERED'];
@@ -23,42 +49,53 @@ function statusProgress(status){
   const idx=Math.max(0,steps.indexOf(status));
   return Math.round(((idx+1)/steps.length)*100);
 }
-function renderHomeOrderStatus(o){
-  const bar=$('homeOrderStatus');
-  if(!o){bar.classList.add('hidden');return}
-  state.lastTrackedStatus=o.status;
-  bar.classList.remove('hidden','cancelled','delivered');
-  if(o.status==='CANCELLED')bar.classList.add('cancelled');
-  if(o.status==='DELIVERED')bar.classList.add('delivered');
-  $('homeStatusOrder').textContent=`Order #${o.id}`;
-  $('homeStatusText').textContent=trackingLabel(o.status);
-  $('homeStatusHint').textContent=o.status==='DELIVERED'?'Tap to view receipt & order details':o.status==='CANCELLED'?'Tap to view order details':'Tap to view live order details';
-  $('homeStatusProgress').style.width=`${statusProgress(o.status)}%`;
-  const stages=['NEW','ACCEPTED','PREPARING','READY','OUT_FOR_DELIVERY','DELIVERED'];
-  const idx=stages.indexOf(o.status);
-  $('homeStatusStages').innerHTML=stages.map((_,i)=>`<span class="${o.status==='CANCELLED'?'':i<=idx?'done':''}"></span>`).join('');
+function renderHomeOrders(orders){
+  const wrap=$('homeOrdersStatus'),list=$('homeOrdersList');
+  if(!orders?.length){wrap.classList.add('hidden');list.innerHTML='';return}
+  wrap.classList.remove('hidden');
+  const active=orders.filter(o=>!['DELIVERED','CANCELLED'].includes(o.status));
+  $('homeOrdersCount').textContent=`${active.length||orders.length} ${active.length===1?'active order':'active orders'}`;
+  list.innerHTML=orders.map(o=>`<button class="home-live-card ${o.status==='CANCELLED'?'cancelled':''}" type="button" data-live-order="${o.id}">
+    <div class="home-live-top"><span class="live-pill"><span class="live-dot"></span>${['DELIVERED','CANCELLED'].includes(o.status)?' ORDER':' LIVE ORDER'}</span><span class="home-live-order">Order #${o.id}</span></div>
+    <div class="home-live-status-row"><div class="home-live-status-copy"><div class="home-live-status">${esc(trackingLabel(o.status))}</div><div class="home-live-hint">${o.status==='DELIVERED'?'Tap to view receipt & details':o.status==='CANCELLED'?'Tap to view order details':'Tap to view live order details'}</div></div><div class="home-live-arrow">›</div></div>
+    <div class="home-live-track"><span style="width:${statusProgress(o.status)}%"></span></div>
+  </button>`).join('');
 }
-async function refreshHomeOrderStatus(){
-  if(!state.tracking){renderHomeOrderStatus(null);return}
-  try{
-    const u=`${API_BASE}/order-track?order_id=${encodeURIComponent(state.tracking.orderId)}&token=${encodeURIComponent(state.tracking.token)}&t=${Date.now()}`;
-    const r=await fetch(u,{cache:'no-store'}),d=await r.json();
-    if(!r.ok)throw Error(d.error||'Could not track order');
-    renderHomeOrderStatus(d);
-    if(['DELIVERED','CANCELLED'].includes(d.status)){
-      clearInterval(state.homeTrackingTimer);
-      state.homeTrackingTimer=null;
-    }
-  }catch(_){
-    // Keep the last known status bar visible if the network briefly fails.
+async function fetchTracking(ref){
+  const u=`${API_BASE}/order-track?order_id=${encodeURIComponent(ref.orderId)}&token=${encodeURIComponent(ref.token)}&t=${Date.now()}`;
+  const r=await fetch(u,{cache:'no-store'});
+  const d=await r.json();
+  if(!r.ok)throw Error(d.error||'Could not track order');
+  return d;
+}
+async function refreshHomeOrders(){
+  if(!state.trackings.length){renderHomeOrders([]);return}
+  const results=await Promise.all(state.trackings.map(async ref=>{
+    try{return {ref,data:await fetchTracking(ref)}}catch(_){return null}
+  }));
+  const valid=results.filter(Boolean);
+  // Keep successful refs. Final orders remain visible during this browser session,
+  // while active orders continue polling.
+  state.trackings=valid.map(x=>x.ref);
+  persistTrackings();
+  const orders=valid.map(x=>x.data).sort((a,b)=>Number(b.id)-Number(a.id));
+  renderHomeOrders(orders);
+  if(state.tracking){
+    const selected=orders.find(o=>Number(o.id)===Number(state.tracking.orderId));
+    if(selected)state.lastTrackedStatus=selected.status;
+  }
+  const hasActive=orders.some(o=>!['DELIVERED','CANCELLED'].includes(o.status));
+  if(!hasActive){
+    clearInterval(state.homeTrackingTimer);
+    state.homeTrackingTimer=null;
   }
 }
 function startHomeTracking(){
   clearInterval(state.homeTrackingTimer);
   state.homeTrackingTimer=null;
-  if(!state.tracking){renderHomeOrderStatus(null);return}
-  refreshHomeOrderStatus();
-  state.homeTrackingTimer=setInterval(refreshHomeOrderStatus,8000);
+  if(!state.trackings.length){renderHomeOrders([]);return}
+  refreshHomeOrders();
+  state.homeTrackingTimer=setInterval(refreshHomeOrders,8000);
 }
 
 async function loadTracking(showSheet=true){
@@ -71,6 +108,7 @@ async function loadTracking(showSheet=true){
     const r=await fetch(u,{cache:'no-store'}),d=await r.json();
     if(!r.ok)throw Error(d.error||'Could not track order');
     renderTracking(d);
+    refreshHomeOrders();
     clearInterval(state.trackingTimer);
     if(!['DELIVERED','CANCELLED'].includes(d.status)){
       state.trackingTimer=setInterval(()=>loadTracking(false),8000);
@@ -78,7 +116,6 @@ async function loadTracking(showSheet=true){
   }catch(e){$('trackingStatus').innerHTML=`<div class="state-card">${esc(e.message)}</div>`}
 }
 function renderTracking(o){
-  renderHomeOrderStatus(o);
   const steps=trackingSteps(o.status),idx=steps.indexOf(o.status);
   $('trackingUpdated').textContent=`Updated just now • Current status`;
   $('trackingHeroIcon').textContent=trackingIcon(o.status);
@@ -118,7 +155,7 @@ function renderStars(){$('stars').innerHTML=[1,2,3,4,5].map(n=>`<button class="s
 async function submitReview(){if(!state.reviewTarget||!state.reviewRating)return;const b=$('submitReviewBtn');b.disabled=true;b.textContent='Submitting…';try{const r=await fetch(`${API_BASE}/customer/reviews`,{method:'POST',headers:{...authHeaders(),'Content-Type':'application/json'},body:JSON.stringify({order_id:state.reviewTarget.orderId,menu_id:state.reviewTarget.menuId,rating:state.reviewRating,review:$('reviewText').value.trim()})});const d=await r.json();if(!r.ok)throw Error(d.error||'Could not save review');toast('Thank you for your rating!');closeSheets();await loadMenu();await openAccount()}catch(e){toast(e.message)}finally{b.disabled=false;b.textContent='Submit Review'}}
 function logoutLocal(){state.token='';state.phone='';localStorage.removeItem('nh_customer_token');localStorage.removeItem('nh_customer_phone');updateAccountButton()}
 async function logout(){try{if(state.token)await fetch(`${API_BASE}/customer/logout`,{method:'POST',headers:authHeaders()})}catch(_){}logoutLocal();closeSheets();toast('Logged out')}
-$('searchInput').oninput=e=>{state.search=e.target.value;renderMenu()};$('categories').onclick=e=>{const b=e.target.closest('[data-cat]');if(!b)return;state.category=b.dataset.cat;renderCategories();renderMenu()};$('menuGrid').onclick=e=>{const b=e.target.closest('[data-action]');if(!b)return;const i=state.menu.find(x=>String(x.id)===String(b.dataset.id));if(!i)return;b.dataset.action==='add'?addItem(i):decrementItem(i.id)};$('variantOptions').onclick=e=>{const b=e.target.closest('[data-variant]');if(!b)return;state.selectedVariant=Number(b.dataset.variant);renderVariantSelection()};$('variantAddBtn').onclick=()=>{const v=state.selectedItem?.variants?.[state.selectedVariant];if(!v)return;const i=state.selectedItem;closeSheets();addResolved(i,v)};$('cartBar').onclick=()=>{renderCart();openSheet('cartSheet')};$('cartLines').onclick=e=>{const m=e.target.closest('[data-minus]'),p=e.target.closest('[data-plus]');if(m)decrementKey(m.dataset.minus);if(p){const x=state.cart.get(p.dataset.plus);if(x){x.qty++;renderMenu();renderCart()}}};$('checkoutBtn').onclick=()=>{closeSheets();$('customerName').value=localStorage.getItem('nh_customer_name')||'';$('customerPhone').value=state.phone||'';renderCart();openSheet('checkoutSheet')};$('checkoutForm').onsubmit=placeOrder;$('locationBtn').onclick=useLocation;$('accountBtn').onclick=openAccount;$('sendOtpBtn').onclick=sendOtp;$('verifyOtpBtn').onclick=verifyOtp;$('changePhoneBtn').onclick=()=>{$('loginOtpStep').classList.add('hidden');$('loginPhoneStep').classList.remove('hidden')};$('refreshOrdersBtn').onclick=loadMyOrders;$('logoutBtn').onclick=logout;$('myOrders').onclick=e=>{const b=e.target.closest('[data-rate-order]');if(b)openReview(b.dataset.rateOrder,b.dataset.rateMenu,b.dataset.rateName)};$('stars').onclick=e=>{const b=e.target.closest('[data-star]');if(b){state.reviewRating=Number(b.dataset.star);renderStars()}};$('submitReviewBtn').onclick=submitReview;$('homeOrderStatus').onclick=()=>loadTracking(true);$('trackOrderBtn').onclick=()=>{closeSheets();loadTracking(true)};$('trackingRefreshBtn').onclick=()=>loadTracking(false);$('doneBtn').onclick=closeSheets;$('sheetBackdrop').onclick=closeSheets;document.addEventListener('click',e=>{if(e.target.closest('[data-close]'))closeSheets()});
+$('searchInput').oninput=e=>{state.search=e.target.value;renderMenu()};$('categories').onclick=e=>{const b=e.target.closest('[data-cat]');if(!b)return;state.category=b.dataset.cat;renderCategories();renderMenu()};$('menuGrid').onclick=e=>{const b=e.target.closest('[data-action]');if(!b)return;const i=state.menu.find(x=>String(x.id)===String(b.dataset.id));if(!i)return;b.dataset.action==='add'?addItem(i):decrementItem(i.id)};$('variantOptions').onclick=e=>{const b=e.target.closest('[data-variant]');if(!b)return;state.selectedVariant=Number(b.dataset.variant);renderVariantSelection()};$('variantAddBtn').onclick=()=>{const v=state.selectedItem?.variants?.[state.selectedVariant];if(!v)return;const i=state.selectedItem;closeSheets();addResolved(i,v)};$('cartBar').onclick=()=>{renderCart();openSheet('cartSheet')};$('cartLines').onclick=e=>{const m=e.target.closest('[data-minus]'),p=e.target.closest('[data-plus]');if(m)decrementKey(m.dataset.minus);if(p){const x=state.cart.get(p.dataset.plus);if(x){x.qty++;renderMenu();renderCart()}}};$('checkoutBtn').onclick=()=>{closeSheets();$('customerName').value=localStorage.getItem('nh_customer_name')||'';$('customerPhone').value=state.phone||'';renderCart();openSheet('checkoutSheet')};$('checkoutForm').onsubmit=placeOrder;$('locationBtn').onclick=useLocation;$('accountBtn').onclick=openAccount;$('sendOtpBtn').onclick=sendOtp;$('verifyOtpBtn').onclick=verifyOtp;$('changePhoneBtn').onclick=()=>{$('loginOtpStep').classList.add('hidden');$('loginPhoneStep').classList.remove('hidden')};$('refreshOrdersBtn').onclick=loadMyOrders;$('logoutBtn').onclick=logout;$('myOrders').onclick=e=>{const b=e.target.closest('[data-rate-order]');if(b)openReview(b.dataset.rateOrder,b.dataset.rateMenu,b.dataset.rateName)};$('stars').onclick=e=>{const b=e.target.closest('[data-star]');if(b){state.reviewRating=Number(b.dataset.star);renderStars()}};$('submitReviewBtn').onclick=submitReview;$('homeOrdersList').onclick=e=>{const b=e.target.closest('[data-live-order]');if(!b)return;const ref=state.trackings.find(x=>Number(x.orderId)===Number(b.dataset.liveOrder));if(!ref)return;state.tracking=ref;loadTracking(true)};$('trackOrderBtn').onclick=()=>{closeSheets();state.tracking=state.trackings[0]||state.tracking;loadTracking(true)};$('trackingRefreshBtn').onclick=()=>loadTracking(false);$('doneBtn').onclick=closeSheets;$('sheetBackdrop').onclick=closeSheets;document.addEventListener('click',e=>{if(e.target.closest('[data-close]'))closeSheets()});
 let installPrompt=null;window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();installPrompt=e;$('installBtn').classList.remove('hidden')});$('installBtn').onclick=async()=>{if(installPrompt){installPrompt.prompt();installPrompt=null;$('installBtn').classList.add('hidden')}};if('serviceWorker'in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('/order/sw.js'));
 loadSavedTracking();updateAccountButton();loadMenu();startHomeTracking();
 
