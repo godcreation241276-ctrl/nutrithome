@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const csv = require('csv-parser');
 const multer = require('multer');
+const crypto = require('crypto');
 
 const app = express();
 app.use(cors());
@@ -25,6 +26,12 @@ const DELIVERY_PICKUP_PHONE = process.env.DELIVERY_PICKUP_PHONE || '';
 const DELIVERY_PICKUP_ADDRESS = process.env.DELIVERY_PICKUP_ADDRESS || '';
 const DELIVERY_PICKUP_LAT = process.env.DELIVERY_PICKUP_LAT || '';
 const DELIVERY_PICKUP_LNG = process.env.DELIVERY_PICKUP_LNG || '';
+const MSG91_AUTH_KEY = process.env.MSG91_AUTH_KEY || '';
+const MSG91_TEMPLATE_ID = process.env.MSG91_TEMPLATE_ID || '';
+// Optional testing-only OTP. Do not configure this in production.
+const CUSTOMER_LOGIN_TEST_OTP = process.env.CUSTOMER_LOGIN_TEST_OTP || '';
+const CUSTOMER_SESSION_DAYS = 30;
+
 
 function adminAuth(req, res, next) {
   if (!ADMIN_KEY) return res.status(503).json({ error: 'ADMIN_KEY is not configured on server' });
@@ -49,6 +56,7 @@ db.serialize(() => {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       category TEXT,
       name TEXT,
+      description TEXT DEFAULT '',
       price INTEGER,
       calories INTEGER DEFAULT 0,
       image TEXT,
@@ -84,6 +92,37 @@ db.serialize(() => {
     )
   `);
 
+  db.run(`
+    CREATE TABLE IF NOT EXISTS customer_sessions (
+      token TEXT PRIMARY KEY,
+      phone TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      expires_at DATETIME NOT NULL
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS customer_otps (
+      phone TEXT PRIMARY KEY,
+      otp_hash TEXT NOT NULL,
+      expires_at DATETIME NOT NULL,
+      attempts INTEGER DEFAULT 0
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS reviews (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_id INTEGER NOT NULL,
+      menu_id INTEGER NOT NULL,
+      customer_phone TEXT NOT NULL,
+      rating INTEGER NOT NULL,
+      review TEXT DEFAULT '',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(order_id, menu_id)
+    )
+  `);
+
   // Existing installations may not have these columns yet.
   addColumnIfMissing('orders', 'latitude REAL');
   addColumnIfMissing('orders', 'longitude REAL');
@@ -93,6 +132,7 @@ db.serialize(() => {
   addColumnIfMissing('orders', 'delivery_tracking_url TEXT');
   addColumnIfMissing('orders', 'delivery_error TEXT');
   addColumnIfMissing('menu', "variants TEXT DEFAULT '[]'");
+  addColumnIfMissing('menu', "description TEXT DEFAULT ''");
 });
 
 /* -------------------------
@@ -244,6 +284,7 @@ function importMenuFromCSV(callback) {
       menuRows.push({
         category: String(row.category_name || '').trim(),
         name,
+        description: String(row.description || row.item_description || '').trim(),
         price: Number.parseInt(row.current_price, 10) || 0,
         calories: 0,
         image: resolveMenuImage(row.image_url),
@@ -262,12 +303,12 @@ function importMenuFromCSV(callback) {
           }
 
           const stmt = db.prepare(`
-            INSERT INTO menu (category,name,price,calories,image,active,variants)
-            VALUES (?,?,?,?,?,?,?)
+            INSERT INTO menu (category,name,description,price,calories,image,active,variants)
+            VALUES (?,?,?,?,?,?,?,?)
           `);
           let insertError = null;
           for (const item of menuRows) {
-            stmt.run([item.category, item.name, item.price, item.calories, item.image, item.active, JSON.stringify(item.variants)], (err) => {
+            stmt.run([item.category, item.name, item.description, item.price, item.calories, item.image, item.active, JSON.stringify(item.variants)], (err) => {
               if (err && !insertError) insertError = err;
             });
           }
@@ -296,10 +337,253 @@ app.post('/admin/import-menu', adminAuth, (req, res) => {
    PUBLIC MENU API
 ------------------------- */
 app.get('/menu', (req, res) => {
-  db.all(`SELECT * FROM menu WHERE active='yes' ORDER BY category,id`, [], (err, rows) => {
-    if (err) return res.status(500).json({ error: 'Unable to load menu' });
-    res.json(attachParsedVariants(rows));
+  db.all(
+    `SELECT m.*,
+            COALESCE(r.rating_avg, 0) AS rating_avg,
+            COALESCE(r.rating_count, 0) AS rating_count
+     FROM menu m
+     LEFT JOIN (
+       SELECT menu_id, ROUND(AVG(rating), 1) AS rating_avg, COUNT(*) AS rating_count
+       FROM reviews
+       GROUP BY menu_id
+     ) r ON r.menu_id = m.id
+     WHERE m.active='yes'
+     ORDER BY m.category,m.id`,
+    [],
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: 'Unable to load menu' });
+      res.json(attachParsedVariants(rows));
+    }
+  );
+});
+
+
+/* -------------------------
+   CUSTOMER MOBILE LOGIN + ORDERS + REVIEWS
+------------------------- */
+function cleanIndianPhone(value) {
+  const phone = String(value || '').replace(/\D/g, '').slice(-10);
+  return /^[6-9]\d{9}$/.test(phone) ? phone : '';
+}
+
+function sha256(value) {
+  return crypto.createHash('sha256').update(String(value)).digest('hex');
+}
+
+function customerAuth(req, res, next) {
+  const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+  if (!token) return res.status(401).json({ error: 'Login required' });
+
+  db.get(
+    `SELECT token,phone FROM customer_sessions
+     WHERE token=? AND datetime(expires_at) > datetime('now')`,
+    [token],
+    (err, row) => {
+      if (err) return res.status(500).json({ error: 'Unable to validate session' });
+      if (!row) return res.status(401).json({ error: 'Session expired. Please login again.' });
+      req.customer = { phone: row.phone, token: row.token };
+      next();
+    }
+  );
+}
+
+async function sendMsg91Otp(phone) {
+  const mobile = `91${phone}`;
+  const url = new URL('https://control.msg91.com/api/v5/otp');
+  url.searchParams.set('template_id', MSG91_TEMPLATE_ID);
+  url.searchParams.set('mobile', mobile);
+  url.searchParams.set('authkey', MSG91_AUTH_KEY);
+  url.searchParams.set('otp_length', '6');
+
+  const r = await fetch(url, { method: 'POST', headers: { Accept: 'application/json' } });
+  const text = await r.text();
+  let data = {};
+  try { data = text ? JSON.parse(text) : {}; } catch (_) { data = { message: text }; }
+  if (!r.ok || String(data.type || '').toLowerCase() === 'error') {
+    throw new Error(data.message || `OTP service failed (${r.status})`);
+  }
+  return data;
+}
+
+async function verifyMsg91Otp(phone, otp) {
+  const url = new URL('https://control.msg91.com/api/v5/otp/verify');
+  url.searchParams.set('otp', otp);
+  url.searchParams.set('mobile', `91${phone}`);
+  const r = await fetch(url, {
+    headers: { authkey: MSG91_AUTH_KEY, Accept: 'application/json' }
   });
+  const text = await r.text();
+  let data = {};
+  try { data = text ? JSON.parse(text) : {}; } catch (_) { data = { message: text }; }
+  const msg = String(data.message || '').toLowerCase();
+  const ok = r.ok && !msg.includes('invalid') && !msg.includes('expired') && String(data.type || '').toLowerCase() !== 'error';
+  if (!ok) throw new Error(data.message || 'Invalid or expired OTP');
+  return data;
+}
+
+function createCustomerSession(phone, callback) {
+  const token = crypto.randomBytes(32).toString('hex');
+  db.run(
+    `INSERT INTO customer_sessions(token,phone,expires_at)
+     VALUES(?,?,datetime('now', ?))`,
+    [token, phone, `+${CUSTOMER_SESSION_DAYS} days`],
+    (err) => callback(err, token)
+  );
+}
+
+app.post('/customer/request-otp', async (req, res) => {
+  const phone = cleanIndianPhone(req.body?.phone);
+  if (!phone) return res.status(400).json({ error: 'Enter a valid 10-digit Indian mobile number' });
+
+  try {
+    if (CUSTOMER_LOGIN_TEST_OTP) {
+      db.run(
+        `INSERT INTO customer_otps(phone,otp_hash,expires_at,attempts)
+         VALUES(?,?,datetime('now','+5 minutes'),0)
+         ON CONFLICT(phone) DO UPDATE SET
+           otp_hash=excluded.otp_hash,
+           expires_at=excluded.expires_at,
+           attempts=0`,
+        [phone, sha256(CUSTOMER_LOGIN_TEST_OTP)],
+        (err) => {
+          if (err) return res.status(500).json({ error: 'Could not create OTP' });
+          res.json({ success: true, testMode: true, message: 'Test OTP is configured on the server.' });
+        }
+      );
+      return;
+    }
+
+    if (!MSG91_AUTH_KEY || !MSG91_TEMPLATE_ID) {
+      return res.status(503).json({
+        error: 'Mobile OTP service is not configured yet. Configure MSG91_AUTH_KEY and MSG91_TEMPLATE_ID.'
+      });
+    }
+
+    await sendMsg91Otp(phone);
+    res.json({ success: true, message: 'OTP sent' });
+  } catch (e) {
+    res.status(502).json({ error: e.message || 'Unable to send OTP' });
+  }
+});
+
+app.post('/customer/verify-otp', async (req, res) => {
+  const phone = cleanIndianPhone(req.body?.phone);
+  const otp = String(req.body?.otp || '').replace(/\D/g, '').slice(0, 8);
+  if (!phone || otp.length < 4) return res.status(400).json({ error: 'Phone and OTP are required' });
+
+  const finish = () => {
+    createCustomerSession(phone, (err, token) => {
+      if (err) return res.status(500).json({ error: 'Could not create login session' });
+      res.json({ success: true, token, customer: { phone } });
+    });
+  };
+
+  if (CUSTOMER_LOGIN_TEST_OTP) {
+    db.get(
+      `SELECT * FROM customer_otps
+       WHERE phone=? AND datetime(expires_at) > datetime('now')`,
+      [phone],
+      (err, row) => {
+        if (err) return res.status(500).json({ error: 'Could not verify OTP' });
+        if (!row || row.attempts >= 5 || row.otp_hash !== sha256(otp)) {
+          if (row) db.run(`UPDATE customer_otps SET attempts=attempts+1 WHERE phone=?`, [phone]);
+          return res.status(401).json({ error: 'Invalid or expired OTP' });
+        }
+        db.run(`DELETE FROM customer_otps WHERE phone=?`, [phone], () => finish());
+      }
+    );
+    return;
+  }
+
+  if (!MSG91_AUTH_KEY || !MSG91_TEMPLATE_ID) {
+    return res.status(503).json({ error: 'Mobile OTP service is not configured yet.' });
+  }
+
+  try {
+    await verifyMsg91Otp(phone, otp);
+    finish();
+  } catch (e) {
+    res.status(401).json({ error: e.message || 'Invalid or expired OTP' });
+  }
+});
+
+app.get('/customer/me', customerAuth, (req, res) => {
+  res.json({ phone: req.customer.phone });
+});
+
+app.post('/customer/logout', customerAuth, (req, res) => {
+  db.run(`DELETE FROM customer_sessions WHERE token=?`, [req.customer.token], () => {
+    res.json({ success: true });
+  });
+});
+
+app.get('/customer/orders', customerAuth, (req, res) => {
+  db.all(
+    `SELECT * FROM orders WHERE customer_phone=? ORDER BY id DESC LIMIT 100`,
+    [req.customer.phone],
+    (err, orders) => {
+      if (err) return res.status(500).json({ error: 'Unable to load order history' });
+
+      db.all(
+        `SELECT * FROM reviews WHERE customer_phone=? ORDER BY id DESC`,
+        [req.customer.phone],
+        (reviewErr, reviews) => {
+          if (reviewErr) return res.status(500).json({ error: 'Unable to load reviews' });
+          const byOrder = new Map();
+          for (const r of reviews || []) {
+            if (!byOrder.has(Number(r.order_id))) byOrder.set(Number(r.order_id), []);
+            byOrder.get(Number(r.order_id)).push(r);
+          }
+
+          res.json((orders || []).map(o => ({
+            ...o,
+            items: parseVariants(o.items),
+            reviews: byOrder.get(Number(o.id)) || []
+          })));
+        }
+      );
+    }
+  );
+});
+
+app.post('/customer/reviews', customerAuth, (req, res) => {
+  const orderId = Number(req.body?.order_id);
+  const menuId = Number(req.body?.menu_id);
+  const rating = Number(req.body?.rating);
+  const review = String(req.body?.review || '').trim().slice(0, 700);
+
+  if (!Number.isInteger(orderId) || !Number.isInteger(menuId) || !Number.isInteger(rating) || rating < 1 || rating > 5) {
+    return res.status(400).json({ error: 'Valid order, item and 1-5 star rating are required' });
+  }
+
+  db.get(
+    `SELECT * FROM orders WHERE id=? AND customer_phone=?`,
+    [orderId, req.customer.phone],
+    (err, order) => {
+      if (err) return res.status(500).json({ error: 'Unable to validate order' });
+      if (!order) return res.status(404).json({ error: 'Order not found' });
+      if (order.status !== 'DELIVERED') return res.status(400).json({ error: 'Rating is available only after delivery' });
+
+      const items = parseVariants(order.items);
+      if (!items.some(x => Number(x.id) === menuId)) {
+        return res.status(400).json({ error: 'This item was not part of the delivered order' });
+      }
+
+      db.run(
+        `INSERT INTO reviews(order_id,menu_id,customer_phone,rating,review)
+         VALUES(?,?,?,?,?)
+         ON CONFLICT(order_id,menu_id) DO UPDATE SET
+           rating=excluded.rating,
+           review=excluded.review,
+           created_at=CURRENT_TIMESTAMP`,
+        [orderId, menuId, req.customer.phone, rating, review],
+        function (saveErr) {
+          if (saveErr) return res.status(500).json({ error: 'Could not save rating' });
+          res.json({ success: true });
+        }
+      );
+    }
+  );
 });
 
 /* -------------------------
@@ -580,18 +864,19 @@ app.get('/admin/menu', adminAuth, (req, res) => {
 });
 
 app.post('/admin/menu', adminAuth, (req, res) => {
-  const { category, name, price, image = '', active = 'yes', variants = [] } = req.body;
+  const { category, name, description = '', price, image = '', active = 'yes', variants = [] } = req.body;
   if (!name || !String(name).trim()) return res.status(400).json({ error: 'name required' });
 
   const normalizedImage = resolveMenuImage(image) || String(image || '').trim();
   const normalizedVariants = normaliseVariants(variants);
 
   db.run(
-    `INSERT INTO menu(category,name,price,calories,image,active,variants)
-     VALUES(?,?,?,0,?,?,?)`,
+    `INSERT INTO menu(category,name,description,price,calories,image,active,variants)
+     VALUES(?,?,?,?,0,?,?,?)`,
     [
       String(category || '').trim(),
       String(name).trim(),
+      String(description || '').trim().slice(0, 600),
       Number(price) || 0,
       normalizedImage,
       active === 'no' ? 'no' : 'yes',
@@ -605,17 +890,18 @@ app.post('/admin/menu', adminAuth, (req, res) => {
 });
 
 app.put('/admin/menu/:id', adminAuth, (req, res) => {
-  const { category, name, price, image = '', active = 'yes', variants = [] } = req.body;
+  const { category, name, description = '', price, image = '', active = 'yes', variants = [] } = req.body;
   if (!name || !String(name).trim()) return res.status(400).json({ error: 'name required' });
 
   const normalizedImage = resolveMenuImage(image) || String(image || '').trim();
   const normalizedVariants = normaliseVariants(variants);
 
   db.run(
-    `UPDATE menu SET category=?,name=?,price=?,image=?,active=?,variants=? WHERE id=?`,
+    `UPDATE menu SET category=?,name=?,description=?,price=?,image=?,active=?,variants=? WHERE id=?`,
     [
       String(category || '').trim(),
       String(name).trim(),
+      String(description || '').trim().slice(0, 600),
       Number(price) || 0,
       normalizedImage,
       active === 'no' ? 'no' : 'yes',
