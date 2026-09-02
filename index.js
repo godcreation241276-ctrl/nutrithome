@@ -87,6 +87,10 @@ const MSG91_TEMPLATE_ID = process.env.MSG91_TEMPLATE_ID || '';
 // Optional testing-only OTP. Do not configure this in production.
 const CUSTOMER_LOGIN_TEST_OTP = process.env.CUSTOMER_LOGIN_TEST_OTP || '';
 const CUSTOMER_SESSION_DAYS = 30;
+const OTP_RESEND_SECONDS = 60;
+const OTP_MAX_REQUESTS_PER_HOUR = 5;
+const OTP_MAX_VERIFY_ATTEMPTS = 5;
+const ALLOW_TEST_OTP = process.env.ALLOW_TEST_OTP === 'true' && process.env.NODE_ENV !== 'production';
 
 
 function adminAuth(req, res, next) {
@@ -145,6 +149,13 @@ async function initDatabase() {
       otp_hash TEXT NOT NULL,
       expires_at TIMESTAMPTZ NOT NULL,
       attempts INTEGER DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS otp_request_limits (
+      phone TEXT PRIMARY KEY,
+      window_started_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      request_count INTEGER NOT NULL DEFAULT 0,
+      last_sent_at TIMESTAMPTZ
     );
 
     CREATE TABLE IF NOT EXISTS reviews (
@@ -423,6 +434,92 @@ function customerAuth(req, res, next) {
   );
 }
 
+
+function maskPhone(phone) {
+  const p = String(phone || '');
+  return p.length === 10 ? `******${p.slice(-4)}` : 'mobile number';
+}
+
+async function checkOtpRequestLimit(phone) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const current = await client.query(
+      `SELECT phone,window_started_at,request_count,last_sent_at
+       FROM otp_request_limits WHERE phone=$1 FOR UPDATE`,
+      [phone]
+    );
+
+    const now = Date.now();
+    if (!current.rows[0]) {
+      await client.query(
+        `INSERT INTO otp_request_limits(phone,window_started_at,request_count,last_sent_at)
+         VALUES($1,CURRENT_TIMESTAMP,1,CURRENT_TIMESTAMP)`,
+        [phone]
+      );
+      await client.query('COMMIT');
+      return { allowed: true, retryAfter: OTP_RESEND_SECONDS };
+    }
+
+    const row = current.rows[0];
+    const windowStart = new Date(row.window_started_at).getTime();
+    const lastSent = row.last_sent_at ? new Date(row.last_sent_at).getTime() : 0;
+
+    if (now - lastSent < OTP_RESEND_SECONDS * 1000) {
+      await client.query('ROLLBACK');
+      return {
+        allowed: false,
+        retryAfter: Math.max(1, Math.ceil((OTP_RESEND_SECONDS * 1000 - (now - lastSent)) / 1000)),
+        reason: 'cooldown'
+      };
+    }
+
+    if (now - windowStart >= 60 * 60 * 1000) {
+      await client.query(
+        `UPDATE otp_request_limits
+         SET window_started_at=CURRENT_TIMESTAMP,request_count=1,last_sent_at=CURRENT_TIMESTAMP
+         WHERE phone=$1`,
+        [phone]
+      );
+      await client.query('COMMIT');
+      return { allowed: true, retryAfter: OTP_RESEND_SECONDS };
+    }
+
+    if (Number(row.request_count || 0) >= OTP_MAX_REQUESTS_PER_HOUR) {
+      await client.query('ROLLBACK');
+      return {
+        allowed: false,
+        retryAfter: Math.max(60, Math.ceil((60 * 60 * 1000 - (now - windowStart)) / 1000)),
+        reason: 'hourly_limit'
+      };
+    }
+
+    await client.query(
+      `UPDATE otp_request_limits
+       SET request_count=request_count+1,last_sent_at=CURRENT_TIMESTAMP
+       WHERE phone=$1`,
+      [phone]
+    );
+    await client.query('COMMIT');
+    return { allowed: true, retryAfter: OTP_RESEND_SECONDS };
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+async function cleanupCustomerAuthData() {
+  try {
+    await pool.query(`DELETE FROM customer_sessions WHERE expires_at <= CURRENT_TIMESTAMP`);
+    await pool.query(`DELETE FROM customer_otps WHERE expires_at <= CURRENT_TIMESTAMP`);
+    await pool.query(`DELETE FROM otp_request_limits WHERE window_started_at < CURRENT_TIMESTAMP - INTERVAL '2 days'`);
+  } catch (e) {
+    console.warn('Customer auth cleanup failed:', e.message);
+  }
+}
+
 async function sendMsg91Otp(phone) {
   const mobile = `91${phone}`;
   const url = new URL('https://control.msg91.com/api/v5/otp');
@@ -472,7 +569,16 @@ app.post('/customer/request-otp', async (req, res) => {
   if (!phone) return res.status(400).json({ error: 'Enter a valid 10-digit Indian mobile number' });
 
   try {
-    if (CUSTOMER_LOGIN_TEST_OTP) {
+    const limit = await checkOtpRequestLimit(phone);
+    if (!limit.allowed) {
+      return res.status(429).json({
+        error: limit.reason === 'hourly_limit'
+          ? 'Too many OTP requests. Please try again later.'
+          : `Please wait ${limit.retryAfter} seconds before requesting another OTP.`,
+        retryAfter: limit.retryAfter
+      });
+    }
+    if (ALLOW_TEST_OTP && CUSTOMER_LOGIN_TEST_OTP) {
       db.run(
         `INSERT INTO customer_otps(phone,otp_hash,expires_at,attempts)
          VALUES(?,?,datetime('now','+5 minutes'),0)
@@ -496,7 +602,7 @@ app.post('/customer/request-otp', async (req, res) => {
     }
 
     await sendMsg91Otp(phone);
-    res.json({ success: true, message: 'OTP sent' });
+    res.json({ success: true, message: `OTP sent to ${maskPhone(phone)}`, retryAfter: OTP_RESEND_SECONDS });
   } catch (e) {
     res.status(502).json({ error: e.message || 'Unable to send OTP' });
   }
@@ -510,11 +616,11 @@ app.post('/customer/verify-otp', async (req, res) => {
   const finish = () => {
     createCustomerSession(phone, (err, token) => {
       if (err) return res.status(500).json({ error: 'Could not create login session' });
-      res.json({ success: true, token, customer: { phone } });
+      res.json({ success: true, token, customer: { phone }, sessionDays: CUSTOMER_SESSION_DAYS });
     });
   };
 
-  if (CUSTOMER_LOGIN_TEST_OTP) {
+  if (ALLOW_TEST_OTP && CUSTOMER_LOGIN_TEST_OTP) {
     db.get(
       `SELECT * FROM customer_otps
        WHERE phone=? AND datetime(expires_at) > datetime('now')`,
@@ -1132,6 +1238,7 @@ async function startServer() {
   try {
     await pool.query('SELECT 1');
     await initDatabase();
+    await cleanupCustomerAuthData();
     app.listen(PORT, () => console.log(`Nutri Home server running on port ${PORT} with Neon PostgreSQL`));
   } catch (err) {
     console.error('Fatal PostgreSQL startup error:', err);
