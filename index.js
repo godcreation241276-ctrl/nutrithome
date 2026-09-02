@@ -553,6 +553,48 @@ app.post('/customer/logout', customerAuth, (req, res) => {
   });
 });
 
+
+app.get('/customer/active-orders', customerAuth, (req, res) => {
+  db.all(
+    `SELECT id,customer_phone,items,total,status,created_at
+     FROM orders
+     WHERE customer_phone=?
+       AND status NOT IN ('DELIVERED','CANCELLED')
+     ORDER BY id DESC
+     LIMIT 20`,
+    [req.customer.phone],
+    (err, orders) => {
+      if (err) return res.status(500).json({ error: 'Unable to load active orders' });
+      res.json((orders || []).map(o => ({
+        ...o,
+        items: parseVariants(o.items)
+      })));
+    }
+  );
+});
+
+app.get('/customer/order/:id', customerAuth, (req, res) => {
+  const orderId = Number(req.params.id);
+  if (!Number.isInteger(orderId) || orderId <= 0) {
+    return res.status(400).json({ error: 'Invalid order id' });
+  }
+
+  db.get(
+    `SELECT id,customer_phone,items,total,status,created_at
+     FROM orders
+     WHERE id=? AND customer_phone=?`,
+    [orderId, req.customer.phone],
+    (err, order) => {
+      if (err) return res.status(500).json({ error: 'Unable to load order' });
+      if (!order) return res.status(404).json({ error: 'Order not found' });
+      res.json({
+        ...order,
+        items: parseVariants(order.items)
+      });
+    }
+  );
+});
+
 app.get('/customer/orders', customerAuth, (req, res) => {
   db.all(
     `SELECT * FROM orders WHERE customer_phone=? ORDER BY id DESC LIMIT 100`,
