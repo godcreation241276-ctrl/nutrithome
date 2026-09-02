@@ -133,6 +133,7 @@ db.serialize(() => {
   addColumnIfMissing('orders', 'delivery_error TEXT');
   addColumnIfMissing('menu', "variants TEXT DEFAULT '[]'");
   addColumnIfMissing('menu', "description TEXT DEFAULT ''");
+  addColumnIfMissing('orders', "track_token TEXT DEFAULT ''");
 });
 
 /* -------------------------
@@ -658,19 +659,53 @@ app.post('/order', (req, res) => {
       finalItems.push({ id: item.id, name: item.name, variant: variant?.label || null, variant_id: variant?.id || null, price: unitPrice, qty, line_total: lineTotal });
     }
 
+    const trackToken = crypto.randomBytes(24).toString('hex');
+
     db.run(
       `INSERT INTO orders
-       (customer_name,customer_phone,customer_address,latitude,longitude,items,total,status)
-       VALUES (?,?,?,?,?,?,?,'NEW')`,
-      [cleanName, cleanPhone, cleanAddress, latitude == null ? null : Number(latitude), longitude == null ? null : Number(longitude), JSON.stringify(finalItems), finalTotal],
+       (customer_name,customer_phone,customer_address,latitude,longitude,items,total,status,track_token)
+       VALUES (?,?,?,?,?,?,?,'NEW',?)`,
+      [cleanName, cleanPhone, cleanAddress, latitude == null ? null : Number(latitude), longitude == null ? null : Number(longitude), JSON.stringify(finalItems), finalTotal, trackToken],
       function (err) {
         if (err) return res.status(500).json({ success: false, error: 'Order could not be saved' });
         const order = { id: this.lastID, customer_name: cleanName, customer_phone: cleanPhone, customer_address: cleanAddress, latitude: latitude == null ? null : Number(latitude), longitude: longitude == null ? null : Number(longitude), items: finalItems, total: finalTotal, status: 'NEW' };
         notifyBusiness(order);
-        res.json({ success: true, orderId: this.lastID, total: finalTotal, status: 'NEW' });
+        res.json({ success: true, orderId: this.lastID, total: finalTotal, status: 'NEW', trackingToken: trackToken });
       }
     );
   });
+});
+
+
+/* -------------------------
+   CUSTOMER ORDER TRACKING (NO LOGIN REQUIRED)
+------------------------- */
+app.get('/order-track', (req, res) => {
+  const orderId = Number(req.query.order_id);
+  const token = String(req.query.token || '').trim();
+
+  if (!Number.isInteger(orderId) || orderId <= 0 || token.length < 20) {
+    return res.status(400).json({ error: 'Invalid tracking link' });
+  }
+
+  db.get(
+    `SELECT id,items,total,status,created_at
+     FROM orders
+     WHERE id=? AND track_token=?`,
+    [orderId, token],
+    (err, order) => {
+      if (err) return res.status(500).json({ error: 'Unable to load tracking status' });
+      if (!order) return res.status(404).json({ error: 'Order tracking not found' });
+
+      res.json({
+        id: order.id,
+        items: parseVariants(order.items),
+        total: Number(order.total || 0),
+        status: order.status,
+        created_at: order.created_at
+      });
+    }
+  );
 });
 
 /* -------------------------
