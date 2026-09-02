@@ -3,116 +3,105 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-  <meta name="theme-color" content="#ffffff" />
-  <meta name="description" content="Order fresh home-style meals from Nutri Home." />
-  <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-  <meta name="apple-mobile-web-app-title" content="Nutri Home" />
+  <meta name="theme-color" content="#1f6b3a" />
+  <title>Nutri Home</title>
   <link rel="manifest" href="/order/manifest.webmanifest" />
-  <link rel="apple-touch-icon" href="/order/icons/icon-192.png" />
-  <link rel="icon" href="/order/icons/icon-192.png" />
-  <link rel="stylesheet" href="/order/styles.css?v=241" />
-  <title>Nutri Home — Order Online</title>
+  <link rel="stylesheet" href="/order/styles.css?v=250" />
 </head>
 <body>
-  <div id="app">
-    <header class="topbar">
-      <div class="brand-wrap">
-        <div class="brand-mark">NH</div>
-        <div>
-          <div class="brand">Nutri Home</div>
-          <div class="tagline">Fresh home-style food</div>
-        </div>
-      </div>
-      <button id="installBtn" class="install-btn hidden">Install App</button>
-    </header>
+<div id="app">
+  <header class="topbar">
+    <div class="brand-wrap">
+      <div class="brand-mark">NH</div>
+      <div><div class="brand">Nutri Home</div><div class="tagline">Homestyle food, delivered</div></div>
+    </div>
+    <div class="header-actions">
+      <button id="accountBtn" class="account-btn">Login</button>
+      <button id="installBtn" class="install-btn hidden">Install</button>
+    </div>
+  </header>
 
-    <main>
-      <section class="hero">
-        <div>
-          <h1>What would you like to eat?</h1>
-          <p>Choose your meal, quantity and delivery location.</p>
-        </div>
-        <div class="open-badge">● Taking orders</div>
-      </section>
-
-      <section class="tools">
-        <label class="search-box">
-          <span>⌕</span>
-          <input id="searchInput" type="search" placeholder="Search dishes" autocomplete="off" />
-        </label>
-        <div id="categories" class="category-row" aria-label="Menu categories"></div>
-      </section>
-
-      <div id="menuState" class="state-card">Loading menu…</div>
-      <section id="menuGrid" class="menu-grid"></section>
-    </main>
-
-    <button id="cartBar" class="cart-bar hidden" aria-label="Open cart">
-      <span><strong id="cartQty">0</strong> item(s)</span>
-      <span>View Cart · <strong id="cartTotal">₹0</strong></span>
-    </button>
-
-    <div id="sheetBackdrop" class="backdrop hidden"></div>
-
-    <section id="variantSheet" class="sheet hidden" aria-modal="true" role="dialog">
-      <div class="sheet-handle"></div>
-      <div class="sheet-head">
-        <div>
-          <h2 id="variantTitle">Choose size</h2>
-          <p>Select one option</p>
-        </div>
-        <button class="icon-btn" data-close="variantSheet">×</button>
-      </div>
-      <div id="variantOptions" class="variant-list"></div>
+  <main>
+    <section class="hero">
+      <div><h1>What would you like to eat?</h1><p>Freshly prepared homestyle meals.</p></div>
+      <div class="open-badge">● Taking orders</div>
     </section>
-
-    <section id="cartSheet" class="sheet sheet-large hidden" aria-modal="true" role="dialog">
-      <div class="sheet-handle"></div>
-      <div class="sheet-head">
-        <div>
-          <h2>Your cart</h2>
-          <p>Review before checkout</p>
-        </div>
-        <button class="icon-btn" data-close="cartSheet">×</button>
-      </div>
-      <div id="cartLines" class="cart-lines"></div>
-      <div class="total-row"><span>Total</span><strong id="sheetTotal">₹0</strong></div>
-      <button id="checkoutBtn" class="primary-btn">Continue to delivery details</button>
+    <section class="tools">
+      <label class="search-box">⌕<input id="searchInput" placeholder="Search dishes" /></label>
+      <div id="categories" class="category-row"></div>
     </section>
+    <div id="menuState" class="state-card hidden"></div>
+    <section id="menuGrid" class="menu-grid"></section>
+  </main>
 
-    <section id="checkoutSheet" class="sheet sheet-large hidden" aria-modal="true" role="dialog">
-      <div class="sheet-handle"></div>
-      <div class="sheet-head">
-        <div>
-          <h2>Delivery details</h2>
-          <p>We need these details to deliver your order.</p>
-        </div>
-        <button class="icon-btn" data-close="checkoutSheet">×</button>
-      </div>
-      <form id="checkoutForm" novalidate>
-        <label class="field">Name<input id="customerName" autocomplete="name" maxlength="80" required /></label>
-        <label class="field">Mobile number<input id="customerPhone" inputmode="numeric" autocomplete="tel" maxlength="10" placeholder="10-digit mobile number" required /></label>
-        <label class="field">Delivery address<textarea id="customerAddress" rows="3" autocomplete="street-address" maxlength="350" required></textarea></label>
-        <div class="location-row">
-          <button id="locationBtn" type="button" class="secondary-btn">📍 Use current location</button>
-          <span id="locationStatus" class="location-status"></span>
-        </div>
-        <div class="checkout-total"><span>Payable</span><strong id="checkoutTotal">₹0</strong></div>
-        <button id="placeOrderBtn" type="submit" class="primary-btn">Place Order</button>
-      </form>
-    </section>
+  <button id="cartBar" class="cart-bar hidden"><span><strong id="cartQty">0</strong> item(s)</span><span>View Cart · <strong id="cartTotal">₹0</strong></span></button>
+  <div id="sheetBackdrop" class="backdrop hidden"></div>
 
-    <section id="successSheet" class="sheet hidden" aria-modal="true" role="dialog">
-      <div class="success-icon">✓</div>
-      <h2>Order placed!</h2>
-      <p id="successText">Your order has been sent to Nutri Home.</p>
-      <button id="doneBtn" class="primary-btn">Done</button>
-    </section>
+  <section id="variantSheet" class="sheet hidden">
+    <div class="sheet-handle"></div>
+    <div class="sheet-head"><div><h2 id="variantTitle">Choose quantity</h2><p id="variantDescription"></p></div><button class="icon-btn" data-close>×</button></div>
+    <div id="variantOptions" class="variant-list"></div>
+    <button id="variantAddBtn" class="primary-btn" disabled>Add Item</button>
+  </section>
 
-    <div id="toast" class="toast hidden" role="status"></div>
-  </div>
+  <section id="cartSheet" class="sheet sheet-large hidden">
+    <div class="sheet-handle"></div>
+    <div class="sheet-head"><div><h2>Your cart</h2><p>Review your items</p></div><button class="icon-btn" data-close>×</button></div>
+    <div id="cartLines"></div>
+    <div class="total-row"><span>Total</span><strong id="sheetTotal">₹0</strong></div>
+    <button id="checkoutBtn" class="primary-btn">Continue</button>
+  </section>
 
-  <script src="/order/app.js?v=241" defer></script>
+  <section id="checkoutSheet" class="sheet sheet-large hidden">
+    <div class="sheet-handle"></div>
+    <div class="sheet-head"><div><h2>Delivery details</h2><p>Where should we send your food?</p></div><button class="icon-btn" data-close>×</button></div>
+    <form id="checkoutForm">
+      <label class="field">Name<input id="customerName" autocomplete="name" maxlength="80" /></label>
+      <label class="field">Mobile number<input id="customerPhone" inputmode="numeric" maxlength="10" /></label>
+      <label class="field">Delivery address<textarea id="customerAddress" rows="3" maxlength="350"></textarea></label>
+      <button id="locationBtn" type="button" class="secondary-btn">📍 Use current location</button>
+      <div id="locationStatus" class="location-status"></div>
+      <div class="checkout-total"><span>Payable</span><strong id="checkoutTotal">₹0</strong></div>
+      <button id="placeOrderBtn" class="primary-btn" type="submit">Place Order</button>
+    </form>
+  </section>
+
+  <section id="loginSheet" class="sheet hidden">
+    <div class="sheet-handle"></div>
+    <div class="sheet-head"><div><h2>Login to Nutri Home</h2><p>Use your mobile number to view orders and rate delivered food.</p></div><button class="icon-btn" data-close>×</button></div>
+    <div id="loginPhoneStep">
+      <label class="field">Mobile number<input id="loginPhone" inputmode="numeric" maxlength="10" placeholder="10-digit mobile number" /></label>
+      <button id="sendOtpBtn" class="primary-btn">Send OTP</button>
+    </div>
+    <div id="loginOtpStep" class="hidden">
+      <p class="otp-copy">OTP sent to <strong id="otpPhoneLabel"></strong></p>
+      <label class="field">OTP<input id="loginOtp" inputmode="numeric" maxlength="8" placeholder="Enter OTP" /></label>
+      <button id="verifyOtpBtn" class="primary-btn">Verify & Login</button>
+      <button id="changePhoneBtn" class="link-btn">Change mobile number</button>
+    </div>
+  </section>
+
+  <section id="accountSheet" class="sheet sheet-large hidden">
+    <div class="sheet-handle"></div>
+    <div class="sheet-head"><div><h2>My Account</h2><p id="accountPhone"></p></div><button class="icon-btn" data-close>×</button></div>
+    <div class="account-tabs"><button id="refreshOrdersBtn" class="secondary-btn">Refresh My Orders</button><button id="logoutBtn" class="link-btn danger">Logout</button></div>
+    <div id="myOrders" class="orders-list"></div>
+  </section>
+
+  <section id="reviewSheet" class="sheet hidden">
+    <div class="sheet-handle"></div>
+    <div class="sheet-head"><div><h2>Rate your food</h2><p id="reviewItemName"></p></div><button class="icon-btn" data-close>×</button></div>
+    <div id="stars" class="stars"></div>
+    <label class="field">Review (optional)<textarea id="reviewText" rows="4" maxlength="700" placeholder="Tell us about taste, portion and quality"></textarea></label>
+    <button id="submitReviewBtn" class="primary-btn" disabled>Submit Review</button>
+  </section>
+
+  <section id="successSheet" class="sheet hidden">
+    <div class="success-icon">✓</div><h2>Order placed!</h2><p id="successText"></p><button id="doneBtn" class="primary-btn">Done</button>
+  </section>
+
+  <div id="toast" class="toast hidden"></div>
+</div>
+<script src="/order/app.js?v=250" defer></script>
 </body>
 </html>

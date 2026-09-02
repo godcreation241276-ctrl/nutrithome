@@ -1,14 +1,20 @@
 {
-  "name": "Nutri Home — Order Online",
+  "name": "Nutri Home Customer",
   "short_name": "Nutri Home",
-  "description": "Order fresh home-style meals from Nutri Home.",
   "start_url": "/order/",
-  "scope": "/order/",
   "display": "standalone",
   "background_color": "#f7f7f5",
-  "theme_color": "#ffffff",
+  "theme_color": "#1f6b3a",
   "icons": [
-    {"src":"/order/icons/icon-192.png","sizes":"192x192","type":"image/png","purpose":"any maskable"},
-    {"src":"/order/icons/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any maskable"}
+    {
+      "src": "/order/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/order/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
   ]
 }
