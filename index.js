@@ -1,5 +1,5 @@
 const express = require('express');
-const sqlite3 = require('sqlite3').verbose();
+const { Pool } = require('pg');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
@@ -11,10 +11,66 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
 
-const db = new sqlite3.Database('./database.db', (err) => {
-  if (err) console.error('Database connection error:', err.message);
-  else console.log('SQLite database connected');
+if (!process.env.DATABASE_URL) {
+  console.error('DATABASE_URL is not configured');
+  process.exit(1);
+}
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
 });
+
+function pgSql(sql) {
+  let i = 0;
+  return String(sql)
+    .replace(/datetime\('now',\s*\?\)/gi, "(CURRENT_TIMESTAMP + (?::interval))")
+    .replace(/datetime\(expires_at\)\s*>\s*datetime\('now'\)/gi, "expires_at > CURRENT_TIMESTAMP")
+    .replace(/datetime\('now','\+5 minutes'\)/gi, "(CURRENT_TIMESTAMP + INTERVAL '5 minutes')")
+    .replace(/\bINSERT OR IGNORE INTO\b/gi, "INSERT INTO")
+    .replace(/\?/g, () => `$${++i}`);
+}
+
+const db = {
+  all(sql, params = [], callback) {
+    pool.query(pgSql(sql), params)
+      .then(r => callback(null, r.rows))
+      .catch(callback);
+  },
+  get(sql, params = [], callback) {
+    pool.query(pgSql(sql), params)
+      .then(r => callback(null, r.rows[0]))
+      .catch(callback);
+  },
+  run(sql, params, callback) {
+    if (typeof params === 'function') {
+      callback = params;
+      params = [];
+    }
+    params = params || [];
+    let q = pgSql(sql);
+
+    // SQLite INSERT OR IGNORE compatibility used by push_tokens.
+    if (/^\s*INSERT\s+INTO\s+push_tokens/i.test(q) && !/ON CONFLICT/i.test(q)) {
+      q += ' ON CONFLICT (token) DO NOTHING';
+    }
+
+    const isInsert = /^\s*INSERT\s+INTO/i.test(q);
+    if (isInsert && !/\bRETURNING\b/i.test(q)) q += ' RETURNING id';
+
+    pool.query(q, params)
+      .then(r => {
+        const ctx = {
+          lastID: r.rows?.[0]?.id,
+          changes: r.rowCount || 0
+        };
+        if (callback) callback.call(ctx, null);
+      })
+      .catch(err => {
+        if (callback) callback.call({ lastID: undefined, changes: 0 }, err);
+      });
+  }
+};
 
 const ADMIN_KEY = process.env.ADMIN_KEY || '';
 const DELIVERY_PROVIDER = (process.env.DELIVERY_PROVIDER || 'shiprocket_quick').toLowerCase();
@@ -39,21 +95,10 @@ function adminAuth(req, res, next) {
   next();
 }
 
-function addColumnIfMissing(table, definition) {
-  db.run(`ALTER TABLE ${table} ADD COLUMN ${definition}`, (err) => {
-    if (err && !String(err.message).includes('duplicate column name')) {
-      console.error(`Migration failed for ${table}.${definition}:`, err.message);
-    }
-  });
-}
-
-/* -------------------------
-   TABLES + SAFE MIGRATIONS
-------------------------- */
-db.serialize(() => {
-  db.run(`
+async function initDatabase() {
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS menu (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id BIGSERIAL PRIMARY KEY,
       category TEXT,
       name TEXT,
       description TEXT DEFAULT '',
@@ -62,17 +107,15 @@ db.serialize(() => {
       image TEXT,
       active TEXT DEFAULT 'yes',
       variants TEXT DEFAULT '[]'
-    )
-  `);
+    );
 
-  db.run(`
     CREATE TABLE IF NOT EXISTS orders (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id BIGSERIAL PRIMARY KEY,
       customer_name TEXT,
       customer_phone TEXT,
       customer_address TEXT,
-      latitude REAL,
-      longitude REAL,
+      latitude DOUBLE PRECISION,
+      longitude DOUBLE PRECISION,
       items TEXT,
       total INTEGER,
       status TEXT DEFAULT 'NEW',
@@ -81,60 +124,61 @@ db.serialize(() => {
       delivery_status TEXT,
       delivery_tracking_url TEXT,
       delivery_error TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
+      track_token TEXT DEFAULT '',
+      created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    );
 
-  db.run(`
     CREATE TABLE IF NOT EXISTS push_tokens (
       token TEXT PRIMARY KEY,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
+      created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    );
 
-  db.run(`
     CREATE TABLE IF NOT EXISTS customer_sessions (
       token TEXT PRIMARY KEY,
       phone TEXT NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      expires_at DATETIME NOT NULL
-    )
-  `);
+      created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+      expires_at TIMESTAMPTZ NOT NULL
+    );
 
-  db.run(`
     CREATE TABLE IF NOT EXISTS customer_otps (
       phone TEXT PRIMARY KEY,
       otp_hash TEXT NOT NULL,
-      expires_at DATETIME NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL,
       attempts INTEGER DEFAULT 0
-    )
-  `);
+    );
 
-  db.run(`
     CREATE TABLE IF NOT EXISTS reviews (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      order_id INTEGER NOT NULL,
-      menu_id INTEGER NOT NULL,
+      id BIGSERIAL PRIMARY KEY,
+      order_id BIGINT NOT NULL,
+      menu_id BIGINT NOT NULL,
       customer_phone TEXT NOT NULL,
-      rating INTEGER NOT NULL,
+      rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
       review TEXT DEFAULT '',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(order_id, menu_id)
-    )
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_orders_customer_phone ON orders(customer_phone);
+    CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_reviews_customer_phone ON reviews(customer_phone);
+    CREATE INDEX IF NOT EXISTS idx_reviews_menu_id ON reviews(menu_id);
   `);
 
-  // Existing installations may not have these columns yet.
-  addColumnIfMissing('orders', 'latitude REAL');
-  addColumnIfMissing('orders', 'longitude REAL');
-  addColumnIfMissing('orders', 'delivery_provider TEXT');
-  addColumnIfMissing('orders', 'delivery_booking_id TEXT');
-  addColumnIfMissing('orders', 'delivery_status TEXT');
-  addColumnIfMissing('orders', 'delivery_tracking_url TEXT');
-  addColumnIfMissing('orders', 'delivery_error TEXT');
-  addColumnIfMissing('menu', "variants TEXT DEFAULT '[]'");
-  addColumnIfMissing('menu', "description TEXT DEFAULT ''");
-  addColumnIfMissing('orders', "track_token TEXT DEFAULT ''");
-});
+  // Safe migrations for future/partially-created PostgreSQL databases.
+  await pool.query(`ALTER TABLE menu ADD COLUMN IF NOT EXISTS description TEXT DEFAULT ''`);
+  await pool.query(`ALTER TABLE menu ADD COLUMN IF NOT EXISTS variants TEXT DEFAULT '[]'`);
+  await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS latitude DOUBLE PRECISION`);
+  await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS longitude DOUBLE PRECISION`);
+  await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_provider TEXT`);
+  await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_booking_id TEXT`);
+  await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_status TEXT`);
+  await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_tracking_url TEXT`);
+  await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_error TEXT`);
+  await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS track_token TEXT DEFAULT ''`);
+
+  console.log('Neon PostgreSQL database connected and schema ready');
+}
+
 
 /* -------------------------
    IMAGE PATH RESOLVER
@@ -294,35 +338,26 @@ function importMenuFromCSV(callback) {
       });
     })
     .on('error', callback)
-    .on('end', () => {
-      db.serialize(() => {
-        db.run('BEGIN TRANSACTION');
-        db.run('DELETE FROM menu', (deleteErr) => {
-          if (deleteErr) {
-            db.run('ROLLBACK');
-            return callback(deleteErr);
-          }
-
-          const stmt = db.prepare(`
-            INSERT INTO menu (category,name,description,price,calories,image,active,variants)
-            VALUES (?,?,?,?,?,?,?,?)
-          `);
-          let insertError = null;
-          for (const item of menuRows) {
-            stmt.run([item.category, item.name, item.description, item.price, item.calories, item.image, item.active, JSON.stringify(item.variants)], (err) => {
-              if (err && !insertError) insertError = err;
-            });
-          }
-          stmt.finalize((finalizeErr) => {
-            const err = finalizeErr || insertError;
-            if (err) {
-              db.run('ROLLBACK');
-              return callback(err);
-            }
-            db.run('COMMIT', (commitErr) => callback(commitErr, menuRows.length));
-          });
-        });
-      });
+    .on('end', async () => {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query('DELETE FROM menu');
+        for (const item of menuRows) {
+          await client.query(
+            `INSERT INTO menu (category,name,description,price,calories,image,active,variants)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+            [item.category, item.name, item.description, item.price, item.calories, item.image, item.active, JSON.stringify(item.variants)]
+          );
+        }
+        await client.query('COMMIT');
+        callback(null, menuRows.length);
+      } catch (e) {
+        await client.query('ROLLBACK');
+        callback(e);
+      } finally {
+        client.release();
+      }
     });
 }
 
@@ -831,7 +866,7 @@ async function bookDeliveryForOrderId(orderId) {
 app.post('/admin/register-push-token', adminAuth, (req, res) => {
   const { token } = req.body;
   if (!token) return res.status(400).json({ error: 'token required' });
-  db.run(`INSERT OR IGNORE INTO push_tokens(token) VALUES(?)`, [token], (err) => {
+  db.run(`INSERT INTO push_tokens(token) VALUES(?) ON CONFLICT (token) DO NOTHING`, [token], (err) => {
     if (err) return res.status(500).json({ error: err.message });
     res.json({ success: true });
   });
@@ -978,7 +1013,7 @@ app.delete('/admin/menu/:id', adminAuth, (req, res) => {
 app.get('/admin/summary', adminAuth, (req, res) => {
   db.all(
     `SELECT * FROM orders
-     WHERE date(created_at, '+5 hours', '+30 minutes') = date('now', '+5 hours', '+30 minutes')`,
+     WHERE (created_at AT TIME ZONE 'Asia/Kolkata')::date = (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date`,
     [],
     (err, rows) => {
       if (err) return res.status(500).json({ error: 'DB error' });
@@ -1050,4 +1085,16 @@ app.use(express.static(path.join(__dirname, 'public'), {
 }));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Nutri Home server running on port ${PORT}`));
+
+async function startServer() {
+  try {
+    await pool.query('SELECT 1');
+    await initDatabase();
+    app.listen(PORT, () => console.log(`Nutri Home server running on port ${PORT} with Neon PostgreSQL`));
+  } catch (err) {
+    console.error('Fatal PostgreSQL startup error:', err);
+    process.exit(1);
+  }
+}
+
+startServer();
