@@ -1,13 +1,101 @@
 const API_BASE=location.origin,FALLBACK='/order/icons/icon-512.png';
 const $=id=>document.getElementById(id),esc=(s='')=>String(s).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])),money=n=>`₹${Math.round(Number(n)||0)}`;
-const state={menu:[],category:'All',search:'',cart:new Map(),selectedItem:null,selectedVariant:null,coords:null,token:localStorage.getItem('nh_customer_token')||'',phone:localStorage.getItem('nh_customer_phone')||'',orders:[],reviewTarget:null,reviewRating:0};
+const state={menu:[],category:'All',search:'',cart:new Map(),selectedItem:null,selectedVariant:null,coords:null,token:localStorage.getItem('nh_customer_token')||'',phone:localStorage.getItem('nh_customer_phone')||'',orders:[],reviewTarget:null,reviewRating:0,tracking:null,trackingTimer:null,homeTrackingTimer:null,lastTrackedStatus:null};
 function imageUrl(v){if(!v)return FALLBACK;v=String(v).trim();return /^https?:\/\//i.test(v)?v:`${API_BASE}${v.startsWith('/')?'':'/'}${v}`}
 function lines(){return[...state.cart.values()].filter(x=>x.qty>0)}function cartQty(){return lines().reduce((s,x)=>s+x.qty,0)}function cartTotal(){return lines().reduce((s,x)=>s+x.qty*Number(x.price),0)}
 function keyFor(i,v){return`${i.id}::${v?.id||v?.label||'base'}`}function qtyForItem(id){return lines().filter(x=>Number(x.item.id)===Number(id)).reduce((s,x)=>s+x.qty,0)}
 function toast(m){const t=$('toast');t.textContent=m;t.classList.remove('hidden');clearTimeout(toast.t);toast.t=setTimeout(()=>t.classList.add('hidden'),3000)}
 function openSheet(id){$('sheetBackdrop').classList.remove('hidden');$(id).classList.remove('hidden');document.body.style.overflow='hidden'}
-function closeSheets(){document.querySelectorAll('.sheet').forEach(x=>x.classList.add('hidden'));$('sheetBackdrop').classList.add('hidden');document.body.style.overflow=''}
-function authHeaders(){return state.token?{Authorization:`Bearer ${state.token}`}:{}}function updateAccountButton(){$('accountBtn').textContent=state.token?'My Account':'Login'}
+function closeSheets(){document.querySelectorAll('.sheet').forEach(x=>x.classList.add('hidden'));$('sheetBackdrop').classList.add('hidden');document.body.style.overflow='';clearInterval(state.trackingTimer);state.trackingTimer=null}
+function authHeaders(){return state.token?{Authorization:`Bearer ${state.token}`}:{}}
+function saveTracking(orderId,token){if(!orderId||!token)return;const data={orderId:Number(orderId),token:String(token)};state.tracking=data;localStorage.setItem('nh_last_tracking',JSON.stringify(data));startHomeTracking()}
+function loadSavedTracking(){try{const x=JSON.parse(localStorage.getItem('nh_last_tracking')||'null');if(x?.orderId&&x?.token)state.tracking=x}catch(_){}}
+function trackingSteps(status){
+  if(status==='CANCELLED')return[];
+  return ['NEW','ACCEPTED','PREPARING','READY','OUT_FOR_DELIVERY','DELIVERED'];
+}
+function trackingLabel(s){return({NEW:'Order placed',ACCEPTED:'Order accepted',PREPARING:'Preparing your food',READY:'Ready for pickup',OUT_FOR_DELIVERY:'Out for delivery',DELIVERED:'Delivered',CANCELLED:'Order cancelled'})[s]||s}
+function trackingSub(s){return({NEW:'Nutri Home has received your order.',ACCEPTED:'Your order has been confirmed by the kitchen.',PREPARING:'The kitchen is preparing your order now.',READY:'Your order is packed and ready.',OUT_FOR_DELIVERY:'Your order is on the way to you.',DELIVERED:'Your order has been delivered. Enjoy your meal!',CANCELLED:'This order will not be processed.'})[s]||'Live order update'}
+function trackingIcon(s){return({NEW:'✓',ACCEPTED:'✓',PREPARING:'◷',READY:'✓',OUT_FOR_DELIVERY:'→',DELIVERED:'✓',CANCELLED:'!'})[s]||'•'}
+function statusProgress(status){
+  const steps=['NEW','ACCEPTED','PREPARING','READY','OUT_FOR_DELIVERY','DELIVERED'];
+  if(status==='CANCELLED')return 100;
+  const idx=Math.max(0,steps.indexOf(status));
+  return Math.round(((idx+1)/steps.length)*100);
+}
+function renderHomeOrderStatus(o){
+  const bar=$('homeOrderStatus');
+  if(!o){bar.classList.add('hidden');return}
+  state.lastTrackedStatus=o.status;
+  bar.classList.remove('hidden','cancelled','delivered');
+  if(o.status==='CANCELLED')bar.classList.add('cancelled');
+  if(o.status==='DELIVERED')bar.classList.add('delivered');
+  $('homeStatusOrder').textContent=`Order #${o.id}`;
+  $('homeStatusText').textContent=trackingLabel(o.status);
+  $('homeStatusHint').textContent=o.status==='DELIVERED'?'Tap to view receipt & order details':o.status==='CANCELLED'?'Tap to view order details':'Tap to view live order details';
+  $('homeStatusProgress').style.width=`${statusProgress(o.status)}%`;
+  const stages=['NEW','ACCEPTED','PREPARING','READY','OUT_FOR_DELIVERY','DELIVERED'];
+  const idx=stages.indexOf(o.status);
+  $('homeStatusStages').innerHTML=stages.map((_,i)=>`<span class="${o.status==='CANCELLED'?'':i<=idx?'done':''}"></span>`).join('');
+}
+async function refreshHomeOrderStatus(){
+  if(!state.tracking){renderHomeOrderStatus(null);return}
+  try{
+    const u=`${API_BASE}/order-track?order_id=${encodeURIComponent(state.tracking.orderId)}&token=${encodeURIComponent(state.tracking.token)}&t=${Date.now()}`;
+    const r=await fetch(u,{cache:'no-store'}),d=await r.json();
+    if(!r.ok)throw Error(d.error||'Could not track order');
+    renderHomeOrderStatus(d);
+    if(['DELIVERED','CANCELLED'].includes(d.status)){
+      clearInterval(state.homeTrackingTimer);
+      state.homeTrackingTimer=null;
+    }
+  }catch(_){
+    // Keep the last known status bar visible if the network briefly fails.
+  }
+}
+function startHomeTracking(){
+  clearInterval(state.homeTrackingTimer);
+  state.homeTrackingTimer=null;
+  if(!state.tracking){renderHomeOrderStatus(null);return}
+  refreshHomeOrderStatus();
+  state.homeTrackingTimer=setInterval(refreshHomeOrderStatus,8000);
+}
+
+async function loadTracking(showSheet=true){
+  if(!state.tracking)return toast('No recent order available to track');
+  if(showSheet)openSheet('trackingSheet');
+  $('trackingTitle').textContent=`Order #${state.tracking.orderId}`;
+  $('trackingStatus').innerHTML='<div class="state-card">Checking order status…</div>';
+  try{
+    const u=`${API_BASE}/order-track?order_id=${encodeURIComponent(state.tracking.orderId)}&token=${encodeURIComponent(state.tracking.token)}&t=${Date.now()}`;
+    const r=await fetch(u,{cache:'no-store'}),d=await r.json();
+    if(!r.ok)throw Error(d.error||'Could not track order');
+    renderTracking(d);
+    clearInterval(state.trackingTimer);
+    if(!['DELIVERED','CANCELLED'].includes(d.status)){
+      state.trackingTimer=setInterval(()=>loadTracking(false),8000);
+    }
+  }catch(e){$('trackingStatus').innerHTML=`<div class="state-card">${esc(e.message)}</div>`}
+}
+function renderTracking(o){
+  renderHomeOrderStatus(o);
+  const steps=trackingSteps(o.status),idx=steps.indexOf(o.status);
+  $('trackingUpdated').textContent=`Updated just now • Current status`;
+  $('trackingHeroIcon').textContent=trackingIcon(o.status);
+  $('trackingHeroStatus').textContent=trackingLabel(o.status);
+  $('trackingHeroSub').textContent=trackingSub(o.status);
+  if(o.status==='CANCELLED'){
+    $('trackingStatus').innerHTML='<div class="tracking-cancelled">This order has been cancelled.</div>';
+  }else{
+    $('trackingStatus').innerHTML=steps.map((s,i)=>{
+      const cls=i<idx?'done':i===idx?'current':'';
+      return `<div class="tracking-step ${cls}"><div class="tracking-dot">${i<idx?'✓':i+1}</div><div><div class="tracking-label">${trackingLabel(s)}</div>${i===idx?'<div class="tracking-note">Current status</div>':''}</div></div>`;
+    }).join('')+(o.status==='DELIVERED'?'<div class="tracking-delivered">Your order has been delivered. Thank you!</div>':'');
+  }
+  const items=Array.isArray(o.items)?o.items:[];
+  $('trackingItems').innerHTML=items.map(x=>`<div class="tracking-item"><span>${x.qty||1}× ${esc(x.name)}${x.variant?` • ${esc(x.variant)}`:''}</span><strong>${money((Number(x.price)||0)*(Number(x.qty)||1))}</strong></div>`).join('')+`<div class="tracking-total"><span>Total</span><strong>${money(o.total)}</strong></div>`;
+}
+function updateAccountButton(){$('accountBtn').textContent=state.token?'My Account':'Login'}
 async function loadMenu(){try{const r=await fetch(`${API_BASE}/menu`,{cache:'no-store'});if(!r.ok)throw Error('Menu could not be loaded');state.menu=await r.json();renderCategories();renderMenu()}catch(e){$('menuGrid').innerHTML=`<div class="state-card">${esc(e.message)}</div>`}}
 function renderCategories(){const cats=['All',...new Set(state.menu.map(x=>x.category).filter(Boolean))];$('categories').innerHTML=cats.map(c=>`<button class="chip ${state.category===c?'active':''}" data-cat="${esc(c)}">${esc(c)}</button>`).join('')}
 function renderMenu(){const q=state.search.trim().toLowerCase();const items=state.menu.filter(i=>(state.category==='All'||i.category===state.category)&&(!q||`${i.name} ${i.description||''}`.toLowerCase().includes(q)));$('menuGrid').innerHTML=items.map(i=>{const vs=Array.isArray(i.variants)?i.variants:[],min=vs.length?Math.min(...vs.map(v=>Number(v.price)||Infinity)):Number(i.price||0),qty=qtyForItem(i.id),rc=Number(i.rating_count||0),ra=Number(i.rating_avg||0);return`<article class="menu-card"><div class="food-image-wrap"><img class="food-image" src="${esc(imageUrl(i.image))}" onerror="this.src='${FALLBACK}'"><span class="veg-dot">●</span></div><div class="food-body"><div class="food-cat">${esc(i.category||'Menu')}</div><div class="food-name">${esc(i.name)}</div><div class="rating-line">${rc?`<span class="rating-badge">★ ${ra.toFixed(1)}</span><span>${rc} rating${rc===1?'':'s'}</span>`:`<span class="no-rating">New • Not rated yet</span>`}</div>${i.description?`<div class="food-description">${esc(i.description)}</div>`:''}${vs.length?`<div class="customisable">Customisable • ${vs.length} size/quantity options</div>`:''}<div class="food-bottom"><div class="price">${vs.length?'From ':''}${money(min)}</div>${qty?`<div class="qty-control"><button data-action="minus" data-id="${i.id}">−</button><span>${qty}</span><button data-action="add" data-id="${i.id}">+</button></div>`:`<button class="add-btn" data-action="add" data-id="${i.id}">ADD</button>`}</div></div></article>`}).join('')||'<div class="state-card">No matching items found.</div>';renderCartBar()}
@@ -19,7 +107,7 @@ function decrementKey(k){const x=state.cart.get(k);if(!x)return;x.qty--;if(x.qty
 function decrementItem(id){const e=[...state.cart.entries()].find(([,x])=>Number(x.item.id)===Number(id));if(e)decrementKey(e[0])}
 function renderCart(){const ls=lines();$('cartLines').innerHTML=ls.length?ls.map(x=>{const k=keyFor(x.item,x.variant);return`<div class="cart-line"><div><div class="line-name">${esc(x.item.name)}</div>${x.variant?`<div class="line-variant">${esc(x.variant.label)}</div>`:''}</div><div class="line-right"><strong>${money(x.price*x.qty)}</strong><div class="mini-qty"><button data-minus="${esc(k)}">−</button><span>${x.qty}</span><button data-plus="${esc(k)}">+</button></div></div></div>`}).join(''):'<div class="state-card">Your cart is empty.</div>';$('sheetTotal').textContent=money(cartTotal());$('checkoutTotal').textContent=money(cartTotal());$('checkoutBtn').disabled=!ls.length}
 async function useLocation(){if(!navigator.geolocation)return toast('Location is not supported');$('locationStatus').textContent='Getting GPS and address…';navigator.geolocation.getCurrentPosition(async p=>{state.coords={latitude:p.coords.latitude,longitude:p.coords.longitude};try{const r=await fetch(`${API_BASE}/reverse-geocode?lat=${p.coords.latitude}&lng=${p.coords.longitude}&t=${Date.now()}`,{cache:'no-store'});const d=await r.json();if(d.address)$('customerAddress').value=d.address;$('locationStatus').textContent=`Location captured • ${p.coords.latitude.toFixed(5)}, ${p.coords.longitude.toFixed(5)}`}catch(_){$('locationStatus').textContent='GPS captured. Please enter address manually.'}},()=>toast('Could not get current location'),{enableHighAccuracy:true,timeout:20000,maximumAge:0})}
-async function placeOrder(e){e.preventDefault();const name=$('customerName').value.trim(),phone=$('customerPhone').value.replace(/\D/g,'').slice(-10),address=$('customerAddress').value.trim();if(!name)return toast('Enter your name');if(!/^[6-9]\d{9}$/.test(phone))return toast('Enter a valid mobile number');if(!address)return toast('Enter delivery address');const btn=$('placeOrderBtn');btn.disabled=true;btn.textContent='Placing order…';try{localStorage.setItem('nh_customer_name',name);const payload={customer_name:name,customer_phone:phone,customer_address:address,latitude:state.coords?.latitude??null,longitude:state.coords?.longitude??null,items:lines().map(x=>({id:x.item.id,variant_id:x.variant?.id||null,variant:x.variant?.label||null,qty:x.qty}))};const r=await fetch(`${API_BASE}/order`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const d=await r.json();if(!r.ok||!d.success)throw Error(d.error||'Order failed');state.cart.clear();renderMenu();renderCart();closeSheets();$('successText').textContent=`Order #${d.orderId} has been sent to Nutri Home. Total ${money(d.total)}.`;openSheet('successSheet');if(state.token)loadMyOrders()}catch(err){toast(err.message)}finally{btn.disabled=false;btn.textContent='Place Order'}}
+async function placeOrder(e){e.preventDefault();const name=$('customerName').value.trim(),phone=$('customerPhone').value.replace(/\D/g,'').slice(-10),address=$('customerAddress').value.trim();if(!name)return toast('Enter your name');if(!/^[6-9]\d{9}$/.test(phone))return toast('Enter a valid mobile number');if(!address)return toast('Enter delivery address');const btn=$('placeOrderBtn');btn.disabled=true;btn.textContent='Placing order…';try{localStorage.setItem('nh_customer_name',name);const payload={customer_name:name,customer_phone:phone,customer_address:address,latitude:state.coords?.latitude??null,longitude:state.coords?.longitude??null,items:lines().map(x=>({id:x.item.id,variant_id:x.variant?.id||null,variant:x.variant?.label||null,qty:x.qty}))};const r=await fetch(`${API_BASE}/order`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const d=await r.json();if(!r.ok||!d.success)throw Error(d.error||'Order failed');saveTracking(d.orderId,d.trackingToken);state.cart.clear();renderMenu();renderCart();closeSheets();$('successText').textContent=`Order #${d.orderId} • ${money(d.total)} • Status: Order placed`;openSheet('successSheet');if(state.token)loadMyOrders()}catch(err){toast(err.message)}finally{btn.disabled=false;btn.textContent='Place Order'}}
 async function sendOtp(){const phone=$('loginPhone').value.replace(/\D/g,'').slice(-10);if(!/^[6-9]\d{9}$/.test(phone))return toast('Enter a valid 10-digit mobile number');const b=$('sendOtpBtn');b.disabled=true;b.textContent='Sending…';try{const r=await fetch(`${API_BASE}/customer/request-otp`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone})});const d=await r.json();if(!r.ok)throw Error(d.error||'OTP could not be sent');state.phone=phone;$('otpPhoneLabel').textContent=phone;$('loginPhoneStep').classList.add('hidden');$('loginOtpStep').classList.remove('hidden');toast(d.testMode?'Test OTP mode is enabled on server':'OTP sent')}catch(e){toast(e.message)}finally{b.disabled=false;b.textContent='Send OTP'}}
 async function verifyOtp(){const otp=$('loginOtp').value.replace(/\D/g,'');if(otp.length<4)return toast('Enter OTP');const b=$('verifyOtpBtn');b.disabled=true;b.textContent='Verifying…';try{const r=await fetch(`${API_BASE}/customer/verify-otp`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone:state.phone,otp})});const d=await r.json();if(!r.ok)throw Error(d.error||'OTP verification failed');state.token=d.token;state.phone=d.customer.phone;localStorage.setItem('nh_customer_token',state.token);localStorage.setItem('nh_customer_phone',state.phone);updateAccountButton();$('customerPhone').value=state.phone;closeSheets();await openAccount()}catch(e){toast(e.message)}finally{b.disabled=false;b.textContent='Verify & Login'}}
 async function openAccount(){if(!state.token)return openSheet('loginSheet');$('accountPhone').textContent=`+91 ${state.phone}`;openSheet('accountSheet');await loadMyOrders()}
@@ -30,6 +118,8 @@ function renderStars(){$('stars').innerHTML=[1,2,3,4,5].map(n=>`<button class="s
 async function submitReview(){if(!state.reviewTarget||!state.reviewRating)return;const b=$('submitReviewBtn');b.disabled=true;b.textContent='Submitting…';try{const r=await fetch(`${API_BASE}/customer/reviews`,{method:'POST',headers:{...authHeaders(),'Content-Type':'application/json'},body:JSON.stringify({order_id:state.reviewTarget.orderId,menu_id:state.reviewTarget.menuId,rating:state.reviewRating,review:$('reviewText').value.trim()})});const d=await r.json();if(!r.ok)throw Error(d.error||'Could not save review');toast('Thank you for your rating!');closeSheets();await loadMenu();await openAccount()}catch(e){toast(e.message)}finally{b.disabled=false;b.textContent='Submit Review'}}
 function logoutLocal(){state.token='';state.phone='';localStorage.removeItem('nh_customer_token');localStorage.removeItem('nh_customer_phone');updateAccountButton()}
 async function logout(){try{if(state.token)await fetch(`${API_BASE}/customer/logout`,{method:'POST',headers:authHeaders()})}catch(_){}logoutLocal();closeSheets();toast('Logged out')}
-$('searchInput').oninput=e=>{state.search=e.target.value;renderMenu()};$('categories').onclick=e=>{const b=e.target.closest('[data-cat]');if(!b)return;state.category=b.dataset.cat;renderCategories();renderMenu()};$('menuGrid').onclick=e=>{const b=e.target.closest('[data-action]');if(!b)return;const i=state.menu.find(x=>String(x.id)===String(b.dataset.id));if(!i)return;b.dataset.action==='add'?addItem(i):decrementItem(i.id)};$('variantOptions').onclick=e=>{const b=e.target.closest('[data-variant]');if(!b)return;state.selectedVariant=Number(b.dataset.variant);renderVariantSelection()};$('variantAddBtn').onclick=()=>{const v=state.selectedItem?.variants?.[state.selectedVariant];if(!v)return;const i=state.selectedItem;closeSheets();addResolved(i,v)};$('cartBar').onclick=()=>{renderCart();openSheet('cartSheet')};$('cartLines').onclick=e=>{const m=e.target.closest('[data-minus]'),p=e.target.closest('[data-plus]');if(m)decrementKey(m.dataset.minus);if(p){const x=state.cart.get(p.dataset.plus);if(x){x.qty++;renderMenu();renderCart()}}};$('checkoutBtn').onclick=()=>{closeSheets();$('customerName').value=localStorage.getItem('nh_customer_name')||'';$('customerPhone').value=state.phone||'';renderCart();openSheet('checkoutSheet')};$('checkoutForm').onsubmit=placeOrder;$('locationBtn').onclick=useLocation;$('accountBtn').onclick=openAccount;$('sendOtpBtn').onclick=sendOtp;$('verifyOtpBtn').onclick=verifyOtp;$('changePhoneBtn').onclick=()=>{$('loginOtpStep').classList.add('hidden');$('loginPhoneStep').classList.remove('hidden')};$('refreshOrdersBtn').onclick=loadMyOrders;$('logoutBtn').onclick=logout;$('myOrders').onclick=e=>{const b=e.target.closest('[data-rate-order]');if(b)openReview(b.dataset.rateOrder,b.dataset.rateMenu,b.dataset.rateName)};$('stars').onclick=e=>{const b=e.target.closest('[data-star]');if(b){state.reviewRating=Number(b.dataset.star);renderStars()}};$('submitReviewBtn').onclick=submitReview;$('doneBtn').onclick=closeSheets;$('sheetBackdrop').onclick=closeSheets;document.addEventListener('click',e=>{if(e.target.closest('[data-close]'))closeSheets()});
+$('searchInput').oninput=e=>{state.search=e.target.value;renderMenu()};$('categories').onclick=e=>{const b=e.target.closest('[data-cat]');if(!b)return;state.category=b.dataset.cat;renderCategories();renderMenu()};$('menuGrid').onclick=e=>{const b=e.target.closest('[data-action]');if(!b)return;const i=state.menu.find(x=>String(x.id)===String(b.dataset.id));if(!i)return;b.dataset.action==='add'?addItem(i):decrementItem(i.id)};$('variantOptions').onclick=e=>{const b=e.target.closest('[data-variant]');if(!b)return;state.selectedVariant=Number(b.dataset.variant);renderVariantSelection()};$('variantAddBtn').onclick=()=>{const v=state.selectedItem?.variants?.[state.selectedVariant];if(!v)return;const i=state.selectedItem;closeSheets();addResolved(i,v)};$('cartBar').onclick=()=>{renderCart();openSheet('cartSheet')};$('cartLines').onclick=e=>{const m=e.target.closest('[data-minus]'),p=e.target.closest('[data-plus]');if(m)decrementKey(m.dataset.minus);if(p){const x=state.cart.get(p.dataset.plus);if(x){x.qty++;renderMenu();renderCart()}}};$('checkoutBtn').onclick=()=>{closeSheets();$('customerName').value=localStorage.getItem('nh_customer_name')||'';$('customerPhone').value=state.phone||'';renderCart();openSheet('checkoutSheet')};$('checkoutForm').onsubmit=placeOrder;$('locationBtn').onclick=useLocation;$('accountBtn').onclick=openAccount;$('sendOtpBtn').onclick=sendOtp;$('verifyOtpBtn').onclick=verifyOtp;$('changePhoneBtn').onclick=()=>{$('loginOtpStep').classList.add('hidden');$('loginPhoneStep').classList.remove('hidden')};$('refreshOrdersBtn').onclick=loadMyOrders;$('logoutBtn').onclick=logout;$('myOrders').onclick=e=>{const b=e.target.closest('[data-rate-order]');if(b)openReview(b.dataset.rateOrder,b.dataset.rateMenu,b.dataset.rateName)};$('stars').onclick=e=>{const b=e.target.closest('[data-star]');if(b){state.reviewRating=Number(b.dataset.star);renderStars()}};$('submitReviewBtn').onclick=submitReview;$('homeOrderStatus').onclick=()=>loadTracking(true);$('trackOrderBtn').onclick=()=>{closeSheets();loadTracking(true)};$('trackingRefreshBtn').onclick=()=>loadTracking(false);$('doneBtn').onclick=closeSheets;$('sheetBackdrop').onclick=closeSheets;document.addEventListener('click',e=>{if(e.target.closest('[data-close]'))closeSheets()});
 let installPrompt=null;window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();installPrompt=e;$('installBtn').classList.remove('hidden')});$('installBtn').onclick=async()=>{if(installPrompt){installPrompt.prompt();installPrompt=null;$('installBtn').classList.add('hidden')}};if('serviceWorker'in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('/order/sw.js'));
-updateAccountButton();loadMenu();
+loadSavedTracking();updateAccountButton();loadMenu();startHomeTracking();
+
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)startHomeTracking()});
