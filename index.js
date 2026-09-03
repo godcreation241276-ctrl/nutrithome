@@ -571,26 +571,8 @@ function decodeJwtPayload(token) {
 }
 
 function findIdentifierValue(value, depth = 0) {
-  if (depth > 7 || value == null) return '';
-
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-
-    // Some providers may nest JSON as a string.
-    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) ||
-        (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
-      try {
-        const parsed = JSON.parse(trimmed);
-        const nested = findIdentifierValue(parsed, depth + 1);
-        if (nested) return nested;
-      } catch (_) {}
-    }
-
-    return '';
-  }
-
-  if (typeof value === 'number' || typeof value === 'boolean') return '';
-
+  if (depth > 5 || value == null) return '';
+  if (typeof value === 'string' || typeof value === 'number') return '';
   if (Array.isArray(value)) {
     for (const item of value) {
       const found = findIdentifierValue(item, depth + 1);
@@ -598,58 +580,47 @@ function findIdentifierValue(value, depth = 0) {
     }
     return '';
   }
-
-  const phoneKeys = new Set([
-    'identifier',
-    'mobile',
-    'phone',
-    'mobilenumber',
-    'phonenumber',
-    'useridentifier',
-    'mobilephone',
-    'msisdn',
-    'contactnumber',
-    'contactphone',
-    'verifiedmobile',
-    'verifiedphone',
-    'sub'
-  ]);
-
-  for (const [key, item] of Object.entries(value)) {
-    const normalizedKey = String(key).toLowerCase().replace(/[^a-z0-9]/g, '');
-
-    if (
-      phoneKeys.has(normalizedKey) &&
-      (typeof item === 'string' || typeof item === 'number')
-    ) {
-      const candidate = cleanIndianPhone(item);
-      if (candidate) return String(item);
-    }
+  const preferred = ['identifier', 'mobile', 'phone', 'mobile_number', 'phone_number', 'user_identifier'];
+  for (const key of preferred) {
+    if (value[key] != null && ['string','number'].includes(typeof value[key])) return String(value[key]);
   }
-
   for (const item of Object.values(value)) {
     const found = findIdentifierValue(item, depth + 1);
     if (found) return found;
   }
-
   return '';
 }
 
 function phoneFromVerifiedWidgetData(verificationData, accessToken) {
   const direct = findIdentifierValue(verificationData);
-  if (direct) {
-    const phone = cleanIndianPhone(direct);
-    if (phone) return phone;
-  }
-
   const claims = decodeJwtPayload(accessToken);
   const fromClaims = findIdentifierValue(claims);
-  if (fromClaims) {
-    const phone = cleanIndianPhone(fromClaims);
-    if (phone) return phone;
+  const candidate = direct || fromClaims;
+  if (!candidate) return '';
+  return cleanIndianPhone(candidate);
+}
+
+function describeObjectShape(value, depth = 0) {
+  if (depth > 3 || value == null) return typeof value;
+
+  if (Array.isArray(value)) {
+    return {
+      type: 'array',
+      length: value.length,
+      sample: value.length ? describeObjectShape(value[0], depth + 1) : null
+    };
   }
 
-  return '';
+  if (typeof value !== 'object') return typeof value;
+
+  const out = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (item == null) out[key] = 'null';
+    else if (Array.isArray(item)) out[key] = `array(${item.length})`;
+    else if (typeof item === 'object') out[key] = describeObjectShape(item, depth + 1);
+    else out[key] = typeof item;
+  }
+  return out;
 }
 
 async function verifyMsg91WidgetAccessToken(accessToken) {
@@ -665,6 +636,11 @@ async function verifyMsg91WidgetAccessToken(accessToken) {
   const text = await r.text();
   let data = {};
   try { data = text ? JSON.parse(text) : {}; } catch (_) { data = { message: text }; }
+  console.log('MSG91 verifyAccessToken response shape:', JSON.stringify(describeObjectShape(data)));
+
+  const jwtClaims = decodeJwtPayload(token);
+  console.log('MSG91 access-token JWT claim keys:', Object.keys(jwtClaims || {}));
+
   const type = String(data.type || data.status || '').toLowerCase();
   const message = String(data.message || data.error || '').toLowerCase();
   if (!r.ok || type === 'error' || type === 'failed' || message.includes('invalid') || message.includes('expired') || message.includes('unauthor')) {
@@ -690,6 +666,7 @@ app.post('/customer/widget-login', async (req, res) => {
   try {
     const verification = await verifyMsg91WidgetAccessToken(accessToken);
     const verifiedPhone = phoneFromVerifiedWidgetData(verification, accessToken);
+    console.log('MSG91 verified phone extraction:', verifiedPhone ? 'FOUND' : 'NOT_FOUND');
     if (!verifiedPhone) {
       return res.status(401).json({ error: 'Could not confirm the verified mobile number from MSG91 token' });
     }
