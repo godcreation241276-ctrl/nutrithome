@@ -83,7 +83,10 @@ const DELIVERY_PICKUP_ADDRESS = process.env.DELIVERY_PICKUP_ADDRESS || '';
 const DELIVERY_PICKUP_LAT = process.env.DELIVERY_PICKUP_LAT || '';
 const DELIVERY_PICKUP_LNG = process.env.DELIVERY_PICKUP_LNG || '';
 const MSG91_AUTH_KEY = process.env.MSG91_AUTH_KEY || '';
-const MSG91_TEMPLATE_ID = process.env.MSG91_TEMPLATE_ID || '';
+const MSG91_TEMPLATE_ID = process.env.MSG91_TEMPLATE_ID || ''; // legacy SendOTP flow only
+const MSG91_WIDGET_ID = process.env.MSG91_WIDGET_ID || '';
+const MSG91_WIDGET_TOKEN = process.env.MSG91_WIDGET_TOKEN || '';
+const MSG91_WIDGET_VERIFY_URL = 'https://control.msg91.com/api/v5/widget/verifyAccessToken';
 // Optional testing-only OTP. Do not configure this in production.
 const CUSTOMER_LOGIN_TEST_OTP = process.env.CUSTOMER_LOGIN_TEST_OTP || '';
 const CUSTOMER_SESSION_DAYS = 30;
@@ -553,6 +556,104 @@ async function verifyMsg91Otp(phone, otp) {
   if (!ok) throw new Error(data.message || 'Invalid or expired OTP');
   return data;
 }
+
+
+function decodeJwtPayload(token) {
+  try {
+    const parts = String(token || '').split('.');
+    if (parts.length < 2) return {};
+    const raw = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const padded = raw + '='.repeat((4 - raw.length % 4) % 4);
+    return JSON.parse(Buffer.from(padded, 'base64').toString('utf8'));
+  } catch (_) {
+    return {};
+  }
+}
+
+function findIdentifierValue(value, depth = 0) {
+  if (depth > 5 || value == null) return '';
+  if (typeof value === 'string' || typeof value === 'number') return '';
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findIdentifierValue(item, depth + 1);
+      if (found) return found;
+    }
+    return '';
+  }
+  const preferred = ['identifier', 'mobile', 'phone', 'mobile_number', 'phone_number', 'user_identifier'];
+  for (const key of preferred) {
+    if (value[key] != null && ['string','number'].includes(typeof value[key])) return String(value[key]);
+  }
+  for (const item of Object.values(value)) {
+    const found = findIdentifierValue(item, depth + 1);
+    if (found) return found;
+  }
+  return '';
+}
+
+function phoneFromVerifiedWidgetData(verificationData, accessToken) {
+  const direct = findIdentifierValue(verificationData);
+  const claims = decodeJwtPayload(accessToken);
+  const fromClaims = findIdentifierValue(claims);
+  const candidate = direct || fromClaims;
+  if (!candidate) return '';
+  return cleanIndianPhone(candidate);
+}
+
+async function verifyMsg91WidgetAccessToken(accessToken) {
+  if (!MSG91_AUTH_KEY) throw new Error('MSG91_AUTH_KEY is not configured');
+  const token = String(accessToken || '').trim();
+  if (!token || token.length < 20) throw new Error('Invalid MSG91 verification token');
+
+  const r = await fetch(MSG91_WIDGET_VERIFY_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ authkey: MSG91_AUTH_KEY, 'access-token': token })
+  });
+  const text = await r.text();
+  let data = {};
+  try { data = text ? JSON.parse(text) : {}; } catch (_) { data = { message: text }; }
+  const type = String(data.type || data.status || '').toLowerCase();
+  const message = String(data.message || data.error || '').toLowerCase();
+  if (!r.ok || type === 'error' || type === 'failed' || message.includes('invalid') || message.includes('expired') || message.includes('unauthor')) {
+    throw new Error(data.message || data.error || 'MSG91 verification failed');
+  }
+  return data;
+}
+
+app.get('/customer/otp-widget-config', (_req, res) => {
+  if (!MSG91_WIDGET_ID || !MSG91_WIDGET_TOKEN) {
+    return res.status(503).json({ error: 'MSG91 OTP Widget is not configured on server' });
+  }
+  res.set('Cache-Control', 'no-store');
+  res.json({ widgetId: MSG91_WIDGET_ID, tokenAuth: MSG91_WIDGET_TOKEN });
+});
+
+app.post('/customer/widget-login', async (req, res) => {
+  const phone = cleanIndianPhone(req.body?.phone);
+  const accessToken = String(req.body?.accessToken || '').trim();
+  if (!phone) return res.status(400).json({ error: 'Enter a valid 10-digit Indian mobile number' });
+  if (!accessToken) return res.status(400).json({ error: 'MSG91 verification token is required' });
+
+  try {
+    const verification = await verifyMsg91WidgetAccessToken(accessToken);
+    const verifiedPhone = phoneFromVerifiedWidgetData(verification, accessToken);
+    if (!verifiedPhone) {
+      return res.status(401).json({ error: 'Could not confirm the verified mobile number from MSG91 token' });
+    }
+    if (verifiedPhone !== phone) {
+      return res.status(401).json({ error: 'Verified mobile number does not match login number' });
+    }
+
+    createCustomerSession(phone, (err, token) => {
+      if (err) return res.status(500).json({ error: 'Could not create login session' });
+      res.set('Cache-Control', 'no-store');
+      res.json({ success: true, token, customer: { phone } });
+    });
+  } catch (e) {
+    res.status(401).json({ error: e.message || 'OTP verification failed' });
+  }
+});
 
 function createCustomerSession(phone, callback) {
   const token = crypto.randomBytes(32).toString('hex');
