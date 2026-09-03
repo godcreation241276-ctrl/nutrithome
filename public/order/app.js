@@ -1,4 +1,3 @@
-```
 const API_BASE=location.origin,FALLBACK='/order/icons/icon-512.png';
 const $=id=>document.getElementById(id),esc=(s='')=>String(s).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])),money=n=>`₹${Math.round(Number(n)||0)}`;
 const state={menu:[],category:'All',search:'',cart:new Map(),selectedItem:null,selectedVariant:null,coords:null,token:localStorage.getItem('nh_customer_token')||'',phone:localStorage.getItem('nh_customer_phone')||'',orders:[],reviewTarget:null,reviewRating:0,otpTimer:null,otpRetryAfter:60,tracking:null,trackings:[],sessionActiveOrders:[],selectedOrderSource:'token',trackingTimer:null,homeTrackingTimer:null,lastTrackedStatus:null,msg91Ready:false,msg91Loading:null};
@@ -301,4 +300,3 @@ loadSavedTracking();updateAccountButton();loadMenu();startHomeTracking();
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)startHomeTracking()});
 
 $('loginOtp').addEventListener('keydown',e=>{if(e.key==='Enter')handleVerifyOtp()});
-```
