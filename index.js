@@ -672,7 +672,8 @@ function createCustomerSession(phone, callback) {
   const token = crypto.randomBytes(32).toString('hex');
   db.run(
     `INSERT INTO customer_sessions(token,phone,expires_at)
-     VALUES(?,?,datetime('now', ?))`,
+     VALUES(?,?,datetime('now', ?))
+     RETURNING token`,
     [token, phone, `+${CUSTOMER_SESSION_DAYS} days`],
     (err) => callback(err, token)
   );
