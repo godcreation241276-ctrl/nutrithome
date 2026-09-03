@@ -358,7 +358,7 @@ async function finishWidgetLogin(widgetData){
   setAuthMessage('Login successful. Loading your orders…','success');await refreshHomeOrders();setTimeout(async()=>{closeSheets();await openAccount();},250);
 }
 async function handleVerifyOtp(){
-  const otp=$('loginOtp').value.replace(/\D/g,'').slice(0,6);if(otp.length!==6)return setAuthMessage('Enter the 6-digit OTP sent to your mobile.');
+  const otp=$('loginOtp').value.replace(/\D/g,'').slice(0,6);if(otp.length<4||otp.length>6)return setAuthMessage('Enter the OTP sent to your mobile.');
   const b=$('verifyOtpBtn');b.disabled=true;b.textContent='Verifying…';setAuthMessage('');
   try{
     await ensureMsg91Widget();
