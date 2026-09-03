@@ -77,3 +77,7 @@
 .auth-message{border-radius:11px;padding:10px 11px;margin-top:11px;font-size:12px;font-weight:750}
 .auth-message.error{background:#fff0ef;color:var(--danger)}
 .auth-message.success{background:var(--accent2);color:var(--accent)}
+
+/* v2.8 MSG91 OTP Widget */
+.msg91-captcha{min-height:0;margin:8px 0 10px;display:flex;justify-content:center}
+.msg91-captcha:empty{display:none}

@@ -1,6 +1,6 @@
 const API_BASE=location.origin,FALLBACK='/order/icons/icon-512.png';
 const $=id=>document.getElementById(id),esc=(s='')=>String(s).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])),money=n=>`₹${Math.round(Number(n)||0)}`;
-const state={menu:[],category:'All',search:'',cart:new Map(),selectedItem:null,selectedVariant:null,coords:null,token:localStorage.getItem('nh_customer_token')||'',phone:localStorage.getItem('nh_customer_phone')||'',orders:[],reviewTarget:null,reviewRating:0,otpTimer:null,otpRetryAfter:60,tracking:null,trackings:[],sessionActiveOrders:[],selectedOrderSource:'token',trackingTimer:null,homeTrackingTimer:null,lastTrackedStatus:null};
+const state={menu:[],category:'All',search:'',cart:new Map(),selectedItem:null,selectedVariant:null,coords:null,token:localStorage.getItem('nh_customer_token')||'',phone:localStorage.getItem('nh_customer_phone')||'',orders:[],reviewTarget:null,reviewRating:0,otpTimer:null,otpRetryAfter:60,tracking:null,trackings:[],sessionActiveOrders:[],selectedOrderSource:'token',trackingTimer:null,homeTrackingTimer:null,lastTrackedStatus:null,msg91Ready:false,msg91Loading:null};
 function imageUrl(v){if(!v)return FALLBACK;v=String(v).trim();return /^https?:\/\//i.test(v)?v:`${API_BASE}${v.startsWith('/')?'':'/'}${v}`}
 function lines(){return[...state.cart.values()].filter(x=>x.qty>0)}function cartQty(){return lines().reduce((s,x)=>s+x.qty,0)}function cartTotal(){return lines().reduce((s,x)=>s+x.qty*Number(x.price),0)}
 function keyFor(i,v){return`${i.id}::${v?.id||v?.label||'base'}`}function qtyForItem(id){return lines().filter(x=>Number(x.item.id)===Number(id)).reduce((s,x)=>s+x.qty,0)}
@@ -197,75 +197,93 @@ function startOtpCountdown(seconds=60){
   $('otpCountdown').classList.remove('hidden');
   const tick=()=>{
     if(state.otpRetryAfter<=0){
-      clearInterval(state.otpTimer);
-      state.otpTimer=null;
-      $('otpCountdown').classList.add('hidden');
-      $('resendOtpBtn').classList.remove('hidden');
-      return;
+      clearInterval(state.otpTimer);state.otpTimer=null;
+      $('otpCountdown').classList.add('hidden');$('resendOtpBtn').classList.remove('hidden');return;
     }
-    $('otpCountdown').textContent=`You can resend OTP in ${state.otpRetryAfter}s`;
-    state.otpRetryAfter--;
+    $('otpCountdown').textContent=`You can resend OTP in ${state.otpRetryAfter}s`;state.otpRetryAfter--;
   };
-  tick();
-  state.otpTimer=setInterval(tick,1000);
+  tick();state.otpTimer=setInterval(tick,1000);
+}
+function msg91ErrorMessage(error,fallback='OTP service error'){
+  if(!error)return fallback;
+  if(typeof error==='string')return error;
+  return error.message||error.error||error.description||fallback;
+}
+function findMsg91AccessToken(data,depth=0){
+  if(depth>5||data==null)return'';
+  if(typeof data==='string')return data.split('.').length===3?data:'';
+  if(Array.isArray(data)){for(const x of data){const t=findMsg91AccessToken(x,depth+1);if(t)return t}return''}
+  if(typeof data!=='object')return'';
+  for(const k of ['access-token','access_token','accessToken','jwt','jwt_token','token']){
+    if(typeof data[k]==='string'&&data[k].length>20)return data[k];
+  }
+  for(const x of Object.values(data)){const t=findMsg91AccessToken(x,depth+1);if(t)return t}
+  return'';
+}
+async function ensureMsg91Widget(){
+  if(state.msg91Ready&&typeof window.sendOtp==='function')return;
+  if(state.msg91Loading)return state.msg91Loading;
+  state.msg91Loading=(async()=>{
+    const r=await fetch(`${API_BASE}/customer/otp-widget-config?t=${Date.now()}`,{cache:'no-store'});
+    const cfg=await r.json();
+    if(!r.ok)throw Error(cfg.error||'OTP Widget is not configured');
+    window.configuration={
+      widgetId:cfg.widgetId,
+      tokenAuth:cfg.tokenAuth,
+      exposeMethods:true,
+      captchaRenderId:'msg91Captcha',
+      success:()=>{},
+      failure:(error)=>console.warn('MSG91 OTP widget:',error)
+    };
+    if(typeof window.initSendOTP==='function'){
+      window.initSendOTP(window.configuration);state.msg91Ready=true;return;
+    }
+    await new Promise((resolve,reject)=>{
+      const old=document.querySelector('script[data-msg91-otp-widget]');
+      if(old){old.addEventListener('load',resolve,{once:true});old.addEventListener('error',()=>reject(Error('Could not load OTP service')),{once:true});return}
+      const script=document.createElement('script');script.src='https://verify.msg91.com/otp-provider.js';script.async=true;script.dataset.msg91OtpWidget='1';script.onload=resolve;script.onerror=()=>reject(Error('Could not load OTP service'));document.head.appendChild(script);
+    });
+    if(typeof window.initSendOTP!=='function')throw Error('OTP service did not initialize');
+    window.initSendOTP(window.configuration);state.msg91Ready=true;
+  })();
+  try{await state.msg91Loading}finally{state.msg91Loading=null}
 }
 async function sendOtp(isResend=false){
   const phone=(isResend?state.phone:$('loginPhone').value.replace(/\D/g,'').slice(-10));
   if(!/^[6-9]\d{9}$/.test(phone))return setAuthMessage('Enter a valid 10-digit Indian mobile number');
-  const b=isResend?$('resendOtpBtn'):$('sendOtpBtn');
-  b.disabled=true;
-  b.textContent=isResend?'Sending…':'Sending…';
-  setAuthMessage('');
+  const b=isResend?$('resendOtpBtn'):$('sendOtpBtn');b.disabled=true;b.textContent='Sending…';setAuthMessage('');
   try{
-    const r=await fetch(`${API_BASE}/customer/request-otp`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone})});
-    const d=await r.json();
-    if(!r.ok){
-      if(r.status===429&&d.retryAfter)startOtpCountdown(d.retryAfter);
-      throw Error(d.error||'OTP could not be sent');
-    }
+    await ensureMsg91Widget();
     state.phone=phone;
+    if(isResend){
+      await new Promise((resolve,reject)=>window.retryOtp(null,resolve,reject));
+    }else{
+      await new Promise((resolve,reject)=>window.sendOtp(`91${phone}`,resolve,reject));
+    }
     $('otpPhoneLabel').textContent=`OTP sent to ${maskLoginPhone(phone)}`;
-    $('loginPhoneStep').classList.add('hidden');
-    $('loginOtpStep').classList.remove('hidden');
-    $('loginOtp').value='';
-    $('loginOtp').focus();
-    startOtpCountdown(d.retryAfter||60);
-    setAuthMessage('OTP sent successfully.','success');
-  }catch(e){
-    setAuthMessage(e.message);
-  }finally{
-    b.disabled=false;
-    b.textContent=isResend?'Resend OTP':'Send OTP';
-  }
+    $('loginPhoneStep').classList.add('hidden');$('loginOtpStep').classList.remove('hidden');$('loginOtp').value='';$('loginOtp').focus();
+    startOtpCountdown(60);setAuthMessage('OTP sent successfully.','success');
+  }catch(e){setAuthMessage(msg91ErrorMessage(e,'OTP could not be sent'))}
+  finally{b.disabled=false;b.textContent=isResend?'Resend OTP':'Send OTP'}
+}
+async function finishWidgetLogin(widgetData){
+  const accessToken=findMsg91AccessToken(widgetData);
+  if(!accessToken)throw Error('MSG91 verification token was not returned');
+  const r=await fetch(`${API_BASE}/customer/widget-login`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone:state.phone,accessToken})});
+  const d=await r.json();if(!r.ok)throw Error(d.error||'Secure login verification failed');
+  state.token=d.token;state.phone=d.customer.phone;localStorage.setItem('nh_customer_token',state.token);localStorage.setItem('nh_customer_phone',state.phone);
+  updateAccountButton();$('customerPhone').value=state.phone;clearInterval(state.otpTimer);state.otpTimer=null;
+  setAuthMessage('Login successful. Loading your orders…','success');await refreshHomeOrders();setTimeout(async()=>{closeSheets();await openAccount();},250);
 }
 async function verifyOtp(){
-  const otp=$('loginOtp').value.replace(/\D/g,'').slice(0,6);
-  if(otp.length!==6)return setAuthMessage('Enter the 6-digit OTP sent to your mobile.');
-  const b=$('verifyOtpBtn');
-  b.disabled=true;
-  b.textContent='Verifying…';
-  setAuthMessage('');
+  const otp=$('loginOtp').value.replace(/\D/g,'').slice(0,6);if(otp.length!==6)return setAuthMessage('Enter the 6-digit OTP sent to your mobile.');
+  const b=$('verifyOtpBtn');b.disabled=true;b.textContent='Verifying…';setAuthMessage('');
   try{
-    const r=await fetch(`${API_BASE}/customer/verify-otp`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone:state.phone,otp})});
-    const d=await r.json();
-    if(!r.ok)throw Error(d.error||'OTP verification failed');
-    state.token=d.token;
-    state.phone=d.customer.phone;
-    localStorage.setItem('nh_customer_token',state.token);
-    localStorage.setItem('nh_customer_phone',state.phone);
-    updateAccountButton();
-    $('customerPhone').value=state.phone;
-    clearInterval(state.otpTimer);
-    state.otpTimer=null;
-    setAuthMessage('Login successful. Loading your orders…','success');
-    await refreshHomeOrders();
-    setTimeout(async()=>{closeSheets();await openAccount();},250);
-  }catch(e){
-    setAuthMessage(e.message);
-  }finally{
-    b.disabled=false;
-    b.textContent='Verify & Login';
-  }
+    await ensureMsg91Widget();
+    const data=await new Promise((resolve,reject)=>window.verifyOtp(otp,resolve,reject));
+    await finishWidgetLogin(data);
+  }catch(e){setAuthMessage(msg91ErrorMessage(e,'OTP verification failed'))}
+  finally{b.disabled=false;b.textContent='Verify & Login'}
 }
 async function openAccount(){if(!state.token)return openSheet('loginSheet');$('accountPhone').textContent=`+91 ${state.phone}`;openSheet('accountSheet');await loadMyOrders()}
 async function loadMyOrders(){if(!state.token)return;const box=$('myOrders');box.innerHTML='<div class="state-card">Loading orders…</div>';try{const r=await fetch(`${API_BASE}/customer/orders`,{headers:authHeaders(),cache:'no-store'});const d=await r.json();if(r.status===401){logoutLocal();throw Error('Please login again')}if(!r.ok)throw Error(d.error||'Could not load orders');state.orders=d;renderMyOrders()}catch(e){box.innerHTML=`<div class="state-card">${esc(e.message)}</div>`}}
