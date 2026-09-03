@@ -592,6 +592,12 @@ function findIdentifierValue(value, depth = 0) {
 }
 
 function phoneFromVerifiedWidgetData(verificationData, accessToken) {
+  // MSG91's verified access-token response for this widget returns the
+  // verified mobile inside the response message string rather than as a
+  // dedicated mobile/phone field.
+  const fromMessage = cleanIndianPhone(verificationData?.message);
+  if (fromMessage) return fromMessage;
+
   const direct = findIdentifierValue(verificationData);
   const claims = decodeJwtPayload(accessToken);
   const fromClaims = findIdentifierValue(claims);
@@ -600,28 +606,6 @@ function phoneFromVerifiedWidgetData(verificationData, accessToken) {
   return cleanIndianPhone(candidate);
 }
 
-function describeObjectShape(value, depth = 0) {
-  if (depth > 3 || value == null) return typeof value;
-
-  if (Array.isArray(value)) {
-    return {
-      type: 'array',
-      length: value.length,
-      sample: value.length ? describeObjectShape(value[0], depth + 1) : null
-    };
-  }
-
-  if (typeof value !== 'object') return typeof value;
-
-  const out = {};
-  for (const [key, item] of Object.entries(value)) {
-    if (item == null) out[key] = 'null';
-    else if (Array.isArray(item)) out[key] = `array(${item.length})`;
-    else if (typeof item === 'object') out[key] = describeObjectShape(item, depth + 1);
-    else out[key] = typeof item;
-  }
-  return out;
-}
 
 async function verifyMsg91WidgetAccessToken(accessToken) {
   if (!MSG91_AUTH_KEY) throw new Error('MSG91_AUTH_KEY is not configured');
@@ -636,11 +620,8 @@ async function verifyMsg91WidgetAccessToken(accessToken) {
   const text = await r.text();
   let data = {};
   try { data = text ? JSON.parse(text) : {}; } catch (_) { data = { message: text }; }
-  console.log('MSG91 verifyAccessToken response shape:', JSON.stringify(describeObjectShape(data)));
-  console.log('MSG91 verifyAccessToken message classification:', cleanIndianPhone(data?.message) ? 'PHONE_LIKE' : 'NOT_PHONE');
 
   const jwtClaims = decodeJwtPayload(token);
-  console.log('MSG91 access-token JWT claim keys:', Object.keys(jwtClaims || {}));
 
   const type = String(data.type || data.status || '').toLowerCase();
   const message = String(data.message || data.error || '').toLowerCase();
@@ -669,9 +650,7 @@ app.post('/customer/widget-login', async (req, res) => {
     const verification = await verifyMsg91WidgetAccessToken(accessToken);
     const tokenClaims = decodeJwtPayload(accessToken);
     const tokenRequestId = String(tokenClaims?.requestId || tokenClaims?.reqId || '').trim();
-    console.log('MSG91 requestId binding:', requestId && tokenRequestId && requestId === tokenRequestId ? 'MATCH' : 'NO_MATCH');
     const verifiedPhone = phoneFromVerifiedWidgetData(verification, accessToken);
-    console.log('MSG91 verified phone extraction:', verifiedPhone ? 'FOUND' : 'NOT_FOUND');
     if (!verifiedPhone) {
       return res.status(401).json({ error: 'Could not confirm the verified mobile number from MSG91 token' });
     }
