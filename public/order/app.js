@@ -220,33 +220,115 @@ function findMsg91AccessToken(data,depth=0){
   for(const x of Object.values(data)){const t=findMsg91AccessToken(x,depth+1);if(t)return t}
   return'';
 }
+async function waitForMsg91Methods(timeout=8000){
+  const started=Date.now();
+
+  while(Date.now()-started<timeout){
+    if(
+      typeof window.sendOtp==='function' &&
+      typeof window.retryOtp==='function' &&
+      typeof window.verifyOtp==='function'
+    ){
+      return;
+    }
+
+    await new Promise(resolve=>setTimeout(resolve,100));
+  }
+
+  throw Error('OTP service methods did not initialize');
+}
+
 async function ensureMsg91Widget(){
-  if(state.msg91Ready&&typeof window.sendOtp==='function')return;
+  if(
+    state.msg91Ready &&
+    typeof window.sendOtp==='function' &&
+    typeof window.retryOtp==='function' &&
+    typeof window.verifyOtp==='function'
+  )return;
+
   if(state.msg91Loading)return state.msg91Loading;
+
   state.msg91Loading=(async()=>{
-    const r=await fetch(`${API_BASE}/customer/otp-widget-config?t=${Date.now()}`,{cache:'no-store'});
+    const r=await fetch(
+      `${API_BASE}/customer/otp-widget-config?t=${Date.now()}`,
+      {cache:'no-store'}
+    );
+
     const cfg=await r.json();
-    if(!r.ok)throw Error(cfg.error||'OTP Widget is not configured');
+
+    if(!r.ok)throw Error(
+      cfg.error||'OTP Widget is not configured'
+    );
+
     window.configuration={
       widgetId:cfg.widgetId,
       tokenAuth:cfg.tokenAuth,
       exposeMethods:true,
       captchaRenderId:'msg91Captcha',
       success:()=>{},
-      failure:(error)=>console.warn('MSG91 OTP widget:',error)
+      failure:(error)=>console.warn(
+        'MSG91 OTP widget:',
+        error
+      )
     };
-    if(typeof window.initSendOTP==='function'){
-      window.initSendOTP(window.configuration);state.msg91Ready=true;return;
+
+    if(typeof window.initSendOTP!=='function'){
+      await new Promise((resolve,reject)=>{
+        const old=document.querySelector(
+          'script[data-msg91-otp-widget]'
+        );
+
+        if(old){
+          if(typeof window.initSendOTP==='function'){
+            resolve();
+            return;
+          }
+
+          old.addEventListener(
+            'load',
+            resolve,
+            {once:true}
+          );
+
+          old.addEventListener(
+            'error',
+            ()=>reject(
+              Error('Could not load OTP service')
+            ),
+            {once:true}
+          );
+
+          return;
+        }
+
+        const script=document.createElement('script');
+        script.src='https://verify.msg91.com/otp-provider.js';
+        script.async=true;
+        script.dataset.msg91OtpWidget='1';
+        script.onload=resolve;
+        script.onerror=()=>reject(
+          Error('Could not load OTP service')
+        );
+
+        document.head.appendChild(script);
+      });
     }
-    await new Promise((resolve,reject)=>{
-      const old=document.querySelector('script[data-msg91-otp-widget]');
-      if(old){old.addEventListener('load',resolve,{once:true});old.addEventListener('error',()=>reject(Error('Could not load OTP service')),{once:true});return}
-      const script=document.createElement('script');script.src='https://verify.msg91.com/otp-provider.js';script.async=true;script.dataset.msg91OtpWidget='1';script.onload=resolve;script.onerror=()=>reject(Error('Could not load OTP service'));document.head.appendChild(script);
-    });
-    if(typeof window.initSendOTP!=='function')throw Error('OTP service did not initialize');
-    window.initSendOTP(window.configuration);state.msg91Ready=true;
+
+    if(typeof window.initSendOTP!=='function')
+      throw Error('OTP service did not initialize');
+
+    window.initSendOTP(window.configuration);
+
+    await waitForMsg91Methods();
+
+    state.msg91Ready=true;
   })();
-  try{await state.msg91Loading}finally{state.msg91Loading=null}
+
+  try{
+    await state.msg91Loading;
+  }finally{
+    state.msg91Loading=null;
+  }
 }
 async function handleSendOtp(isResend=false){
   const phone=(isResend?state.phone:$('loginPhone').value.replace(/\D/g,'').slice(-10));
