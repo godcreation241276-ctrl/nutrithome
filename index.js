@@ -571,8 +571,26 @@ function decodeJwtPayload(token) {
 }
 
 function findIdentifierValue(value, depth = 0) {
-  if (depth > 5 || value == null) return '';
-  if (typeof value === 'string' || typeof value === 'number') return '';
+  if (depth > 7 || value == null) return '';
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+
+    // Some providers may nest JSON as a string.
+    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+        (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        const nested = findIdentifierValue(parsed, depth + 1);
+        if (nested) return nested;
+      } catch (_) {}
+    }
+
+    return '';
+  }
+
+  if (typeof value === 'number' || typeof value === 'boolean') return '';
+
   if (Array.isArray(value)) {
     for (const item of value) {
       const found = findIdentifierValue(item, depth + 1);
@@ -580,24 +598,58 @@ function findIdentifierValue(value, depth = 0) {
     }
     return '';
   }
-  const preferred = ['identifier', 'mobile', 'phone', 'mobile_number', 'phone_number', 'user_identifier'];
-  for (const key of preferred) {
-    if (value[key] != null && ['string','number'].includes(typeof value[key])) return String(value[key]);
+
+  const phoneKeys = new Set([
+    'identifier',
+    'mobile',
+    'phone',
+    'mobilenumber',
+    'phonenumber',
+    'useridentifier',
+    'mobilephone',
+    'msisdn',
+    'contactnumber',
+    'contactphone',
+    'verifiedmobile',
+    'verifiedphone',
+    'sub'
+  ]);
+
+  for (const [key, item] of Object.entries(value)) {
+    const normalizedKey = String(key).toLowerCase().replace(/[^a-z0-9]/g, '');
+
+    if (
+      phoneKeys.has(normalizedKey) &&
+      (typeof item === 'string' || typeof item === 'number')
+    ) {
+      const candidate = cleanIndianPhone(item);
+      if (candidate) return String(item);
+    }
   }
+
   for (const item of Object.values(value)) {
     const found = findIdentifierValue(item, depth + 1);
     if (found) return found;
   }
+
   return '';
 }
 
 function phoneFromVerifiedWidgetData(verificationData, accessToken) {
   const direct = findIdentifierValue(verificationData);
+  if (direct) {
+    const phone = cleanIndianPhone(direct);
+    if (phone) return phone;
+  }
+
   const claims = decodeJwtPayload(accessToken);
   const fromClaims = findIdentifierValue(claims);
-  const candidate = direct || fromClaims;
-  if (!candidate) return '';
-  return cleanIndianPhone(candidate);
+  if (fromClaims) {
+    const phone = cleanIndianPhone(fromClaims);
+    if (phone) return phone;
+  }
+
+  return '';
 }
 
 async function verifyMsg91WidgetAccessToken(accessToken) {
