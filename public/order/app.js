@@ -1,6 +1,6 @@
 const API_BASE=location.origin,FALLBACK='/order/icons/icon-512.png';
 const $=id=>document.getElementById(id),esc=(s='')=>String(s).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])),money=n=>`₹${Math.round(Number(n)||0)}`;
-const state={menu:[],category:'All',search:'',cart:new Map(),selectedItem:null,selectedVariant:null,coords:null,token:localStorage.getItem('nh_customer_token')||'',phone:localStorage.getItem('nh_customer_phone')||'',orders:[],reviewTarget:null,reviewRating:0,otpTimer:null,otpRetryAfter:60,tracking:null,trackings:[],sessionActiveOrders:[],selectedOrderSource:'token',trackingTimer:null,homeTrackingTimer:null,lastTrackedStatus:null,msg91Ready:false,msg91Loading:null};
+const state={menu:[],category:'All',search:'',cart:new Map(),selectedItem:null,selectedVariant:null,coords:null,token:localStorage.getItem('nh_customer_token')||'',phone:localStorage.getItem('nh_customer_phone')||'',orders:[],reviewTarget:null,reviewRating:0,otpTimer:null,otpRetryAfter:60,tracking:null,trackings:[],sessionActiveOrders:[],selectedOrderSource:'token',trackingTimer:null,homeTrackingTimer:null,lastTrackedStatus:null,msg91Ready:false,msg91Loading:null,msg91ReqId:''};
 function imageUrl(v){if(!v)return FALLBACK;v=String(v).trim();return /^https?:\/\//i.test(v)?v:`${API_BASE}${v.startsWith('/')?'':'/'}${v}`}
 function lines(){return[...state.cart.values()].filter(x=>x.qty>0)}function cartQty(){return lines().reduce((s,x)=>s+x.qty,0)}function cartTotal(){return lines().reduce((s,x)=>s+x.qty*Number(x.price),0)}
 function keyFor(i,v){return`${i.id}::${v?.id||v?.label||'base'}`}function qtyForItem(id){return lines().filter(x=>Number(x.item.id)===Number(id)).reduce((s,x)=>s+x.qty,0)}
@@ -220,6 +220,17 @@ function findMsg91AccessToken(data,depth=0){
   for(const x of Object.values(data)){const t=findMsg91AccessToken(x,depth+1);if(t)return t}
   return'';
 }
+function findMsg91RequestId(data,depth=0){
+  if(depth>5||data==null)return'';
+  if(Array.isArray(data)){for(const x of data){const r=findMsg91RequestId(x,depth+1);if(r)return r}return''}
+  if(typeof data!=='object')return'';
+  for(const k of ['reqId','requestId','request_id','req_id']){
+    if(data[k]!=null&&String(data[k]).trim())return String(data[k]).trim();
+  }
+  for(const x of Object.values(data)){const r=findMsg91RequestId(x,depth+1);if(r)return r}
+  return'';
+}
+
 async function waitForMsg91Methods(timeout=8000){
   const started=Date.now();
 
@@ -337,11 +348,22 @@ async function handleSendOtp(isResend=false){
   try{
     await ensureMsg91Widget();
     state.phone=phone;
-    if(isResend){
-      await new Promise((resolve,reject)=>window.retryOtp(null,resolve,reject));
-    }else{
-      await new Promise((resolve,reject)=>window.sendOtp(`91${phone}`,resolve,reject));
+
+    if(!isResend&&typeof window.isCaptchaVerified==='function'&&!window.isCaptchaVerified()){
+      setAuthMessage('Please complete the “I am human” captcha, then click Send OTP again.');
+      return;
     }
+
+    let sendData;
+    if(isResend){
+      sendData=await new Promise((resolve,reject)=>window.retryOtp(null,resolve,reject,state.msg91ReqId||undefined));
+    }else{
+      sendData=await new Promise((resolve,reject)=>window.sendOtp(`91${phone}`,resolve,reject));
+    }
+
+    const reqId=findMsg91RequestId(sendData);
+    if(reqId)state.msg91ReqId=reqId;
+
     $('otpPhoneLabel').textContent=`OTP sent to ${maskLoginPhone(phone)}`;
     $('loginPhoneStep').classList.add('hidden');$('loginOtpStep').classList.remove('hidden');$('loginOtp').value='';$('loginOtp').focus();
     startOtpCountdown(60);setAuthMessage('OTP sent successfully.','success');
@@ -351,7 +373,7 @@ async function handleSendOtp(isResend=false){
 async function finishWidgetLogin(widgetData){
   const accessToken=findMsg91AccessToken(widgetData);
   if(!accessToken)throw Error('MSG91 verification token was not returned');
-  const r=await fetch(`${API_BASE}/customer/widget-login`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone:state.phone,accessToken})});
+  const r=await fetch(`${API_BASE}/customer/widget-login`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone:state.phone,accessToken,requestId:state.msg91ReqId||''})});
   const d=await r.json();if(!r.ok)throw Error(d.error||'Secure login verification failed');
   state.token=d.token;state.phone=d.customer.phone;localStorage.setItem('nh_customer_token',state.token);localStorage.setItem('nh_customer_phone',state.phone);
   updateAccountButton();$('customerPhone').value=state.phone;clearInterval(state.otpTimer);state.otpTimer=null;
@@ -362,7 +384,7 @@ async function handleVerifyOtp(){
   const b=$('verifyOtpBtn');b.disabled=true;b.textContent='Verifying…';setAuthMessage('');
   try{
     await ensureMsg91Widget();
-    const data=await new Promise((resolve,reject)=>window.verifyOtp(otp,resolve,reject));
+    const data=await new Promise((resolve,reject)=>window.verifyOtp(otp,resolve,reject,state.msg91ReqId||undefined));
     await finishWidgetLogin(data);
   }catch(e){setAuthMessage(msg91ErrorMessage(e,'OTP verification failed'))}
   finally{b.disabled=false;b.textContent='Verify & Login'}
@@ -381,4 +403,5 @@ loadSavedTracking();updateAccountButton();loadMenu();startHomeTracking();
 
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)startHomeTracking()});
 
+$('loginOtp').placeholder='Enter OTP';
 $('loginOtp').addEventListener('keydown',e=>{if(e.key==='Enter')handleVerifyOtp()});
