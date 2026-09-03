@@ -637,6 +637,7 @@ async function verifyMsg91WidgetAccessToken(accessToken) {
   let data = {};
   try { data = text ? JSON.parse(text) : {}; } catch (_) { data = { message: text }; }
   console.log('MSG91 verifyAccessToken response shape:', JSON.stringify(describeObjectShape(data)));
+  console.log('MSG91 verifyAccessToken message classification:', cleanIndianPhone(data?.message) ? 'PHONE_LIKE' : 'NOT_PHONE');
 
   const jwtClaims = decodeJwtPayload(token);
   console.log('MSG91 access-token JWT claim keys:', Object.keys(jwtClaims || {}));
@@ -660,11 +661,15 @@ app.get('/customer/otp-widget-config', (_req, res) => {
 app.post('/customer/widget-login', async (req, res) => {
   const phone = cleanIndianPhone(req.body?.phone);
   const accessToken = String(req.body?.accessToken || '').trim();
+  const requestId = String(req.body?.requestId || '').trim();
   if (!phone) return res.status(400).json({ error: 'Enter a valid 10-digit Indian mobile number' });
   if (!accessToken) return res.status(400).json({ error: 'MSG91 verification token is required' });
 
   try {
     const verification = await verifyMsg91WidgetAccessToken(accessToken);
+    const tokenClaims = decodeJwtPayload(accessToken);
+    const tokenRequestId = String(tokenClaims?.requestId || tokenClaims?.reqId || '').trim();
+    console.log('MSG91 requestId binding:', requestId && tokenRequestId && requestId === tokenRequestId ? 'MATCH' : 'NO_MATCH');
     const verifiedPhone = phoneFromVerifiedWidgetData(verification, accessToken);
     console.log('MSG91 verified phone extraction:', verifiedPhone ? 'FOUND' : 'NOT_FOUND');
     if (!verifiedPhone) {
